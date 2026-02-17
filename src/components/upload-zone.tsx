@@ -126,10 +126,10 @@ export function UploadZone({ bucket, prefix }: UploadZoneProps) {
         onDragLeave={() => setDragging(false)}
         onDrop={handleDrop}
         onClick={() => inputRef.current?.click()}
-        className={`cursor-pointer rounded-lg border-2 border-dashed p-6 text-center transition ${
+        className={`cursor-pointer rounded-xl border-2 border-dashed p-8 text-center transition ${
           dragging
-            ? "border-indigo-400 bg-indigo-50"
-            : "border-gray-300 hover:border-gray-400"
+            ? "border-accent-400 bg-accent-50"
+            : "border-slate-200 hover:border-slate-300 hover:bg-white/60"
         }`}
       >
         <input
@@ -139,19 +139,22 @@ export function UploadZone({ bucket, prefix }: UploadZoneProps) {
           className="hidden"
           onChange={(e) => e.target.files && handleFiles(e.target.files)}
         />
-        <p className="text-sm text-gray-500">
+        <svg className="mx-auto mb-2 h-6 w-6 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 16V4m0 0l-4 4m4-4l4 4M4 20h16" />
+        </svg>
+        <p className="text-sm text-slate-400">
           Drop files here or click to upload
         </p>
       </div>
 
       {uploads.length > 0 && (
-        <div className="space-y-1">
+        <div className="space-y-1.5 rounded-xl bg-white/80 p-3 shadow-sm ring-1 ring-slate-200/60">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-gray-500">Uploads</span>
+            <span className="text-xs font-medium text-slate-500">Uploads</span>
             {uploads.some((u) => u.done || u.error) && (
               <button
                 onClick={clearDone}
-                className="text-xs text-gray-400 hover:text-gray-600"
+                className="text-xs text-slate-400 transition hover:text-slate-600"
               >
                 Clear
               </button>
@@ -159,17 +162,17 @@ export function UploadZone({ bucket, prefix }: UploadZoneProps) {
           </div>
           {uploads.map((u) => (
             <div key={u.name} className="flex items-center gap-2 text-xs">
-              <span className="min-w-0 flex-1 truncate text-gray-700">
+              <span className="min-w-0 flex-1 truncate text-slate-600">
                 {u.name}
               </span>
               {u.error ? (
                 <span className="shrink-0 text-red-500">{u.error}</span>
               ) : u.done ? (
-                <span className="shrink-0 text-green-600">Done</span>
+                <span className="shrink-0 text-emerald-600">Done</span>
               ) : (
-                <div className="h-1.5 w-20 shrink-0 overflow-hidden rounded-full bg-gray-200">
+                <div className="h-1.5 w-20 shrink-0 overflow-hidden rounded-full bg-slate-100">
                   <div
-                    className="h-full rounded-full bg-indigo-500 transition-all"
+                    className="h-full rounded-full bg-accent-500 transition-all"
                     style={{ width: `${u.progress}%` }}
                   />
                 </div>

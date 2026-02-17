@@ -78,7 +78,7 @@ function SortableItem({
   return (
     <div ref={setNodeRef} style={style} {...attributes} {...listeners} className="relative cursor-grab active:cursor-grabbing">
       <div
-        className="block w-full overflow-hidden rounded-md bg-gray-100 ring-2 ring-indigo-300 ring-offset-1"
+        className="block w-full overflow-hidden rounded-lg bg-slate-100 ring-2 ring-accent-400/60 ring-offset-2 shadow-sm"
         style={{ aspectRatio: "1" }}
       >
         {thumb ? (
@@ -86,11 +86,11 @@ function SortableItem({
         ) : (
           <div className="flex h-full w-full flex-col items-center justify-center gap-1 p-2">
             <FileIcon />
-            <span className="text-[10px] text-gray-400 truncate w-full text-center">{name}</span>
+            <span className="text-[10px] text-slate-400 truncate w-full text-center">{name}</span>
           </div>
         )}
       </div>
-      <p className="mt-0.5 truncate px-0.5 text-[10px] text-gray-500" title={name}>
+      <p className="mt-1 truncate px-0.5 text-[11px] text-slate-500" title={name}>
         {name}
       </p>
     </div>
@@ -134,7 +134,7 @@ export function SortableGridView({
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
       <SortableContext items={objects.map((o) => o.key)} strategy={rectSortingStrategy}>
-        <div className="grid grid-cols-3 gap-1 p-1 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
+        <div className="grid grid-cols-3 gap-2 p-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
           {objects.map((obj) => (
             <SortableItem
               key={obj.key}

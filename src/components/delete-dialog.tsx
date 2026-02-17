@@ -29,19 +29,19 @@ export function DeleteDialog({ bucket, fileKey, onClose }: DeleteDialogProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
-        className="mx-4 w-full max-w-sm rounded-lg bg-white p-6 shadow-xl"
+        className="mx-4 w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl ring-1 ring-black/5"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="mb-2 text-sm font-medium text-gray-900">
+        <h2 className="mb-2 text-sm font-medium text-slate-800">
           Delete file?
         </h2>
-        <p className="mb-4 text-sm text-gray-500">
+        <p className="mb-5 text-sm text-slate-500">
           Are you sure you want to delete{" "}
-          <span className="font-medium text-gray-700">
+          <span className="font-medium text-slate-700">
             {nameFromKey(fileKey)}
           </span>
           ? This cannot be undone.
@@ -49,14 +49,14 @@ export function DeleteDialog({ bucket, fileKey, onClose }: DeleteDialogProps) {
         <div className="flex justify-end gap-2">
           <button
             onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100"
+            className="rounded-lg px-3.5 py-1.5 text-sm text-slate-600 transition hover:bg-slate-100"
           >
             Cancel
           </button>
           <button
             onClick={handleDelete}
             disabled={loading}
-            className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+            className="rounded-lg bg-red-600 px-3.5 py-1.5 text-sm font-medium text-white shadow-sm transition hover:bg-red-700 disabled:opacity-50"
           >
             {loading ? "Deleting..." : "Delete"}
           </button>

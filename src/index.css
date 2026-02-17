@@ -1,1 +1,14 @@
 @import "tailwindcss";
+
+@theme {
+  --color-accent-50: oklch(0.97 0.02 265);
+  --color-accent-100: oklch(0.93 0.04 265);
+  --color-accent-500: oklch(0.55 0.18 265);
+  --color-accent-600: oklch(0.48 0.2 265);
+  --color-accent-700: oklch(0.42 0.2 265);
+}
+
+body {
+  background: linear-gradient(145deg, #f8f9fb 0%, #f1f3f8 100%);
+  min-height: 100vh;
+}

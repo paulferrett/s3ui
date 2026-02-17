@@ -98,18 +98,18 @@ export function BrowserPage() {
   }, [data?.objects, pendingOrder, prefix]);
 
   return (
-    <div className="mx-auto min-h-screen max-w-4xl p-4">
+    <div className="mx-auto min-h-screen max-w-5xl px-4 py-6 sm:px-6">
       {/* Header */}
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-gray-900">
-          S3 Asset Manager
+      <div className="mb-8 flex items-center justify-between">
+        <h1 className="text-base font-medium tracking-tight text-slate-800">
+          Assets
         </h1>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-4">
           {buckets.length > 1 && (
             <select
               value={bucket}
               onChange={(e) => onBucketChange(e.target.value)}
-              className="rounded-md border border-gray-300 px-2 py-1 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              className="rounded-lg border-0 bg-white/80 px-3 py-1.5 text-sm text-slate-700 shadow-sm ring-1 ring-slate-200 focus:ring-2 focus:ring-accent-500"
             >
               {buckets.map((b) => (
                 <option key={b} value={b}>
@@ -120,7 +120,7 @@ export function BrowserPage() {
           )}
           <button
             onClick={logout}
-            className="text-sm text-gray-500 hover:text-gray-700"
+            className="text-xs font-medium text-slate-400 transition hover:text-slate-600"
           >
             Sign out
           </button>
@@ -128,14 +128,14 @@ export function BrowserPage() {
       </div>
 
       {/* Breadcrumb + actions */}
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-5 flex items-center justify-between">
         <Breadcrumb prefix={prefix} onNavigate={onNavigate} />
         <div className="flex items-center gap-2">
           {/* View toggle */}
-          <div className="flex rounded-md border border-gray-300">
+          <div className="flex overflow-hidden rounded-lg bg-white/80 shadow-sm ring-1 ring-slate-200">
             <button
               onClick={() => setViewMode("list")}
-              className={`rounded-l-md px-2 py-1 ${viewMode === "list" ? "bg-gray-100 text-gray-900" : "text-gray-400 hover:text-gray-600"}`}
+              className={`px-2.5 py-1.5 transition ${viewMode === "list" ? "bg-slate-100 text-slate-800" : "text-slate-400 hover:text-slate-600"}`}
               title="List view"
             >
               <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -144,7 +144,7 @@ export function BrowserPage() {
             </button>
             <button
               onClick={() => setViewMode("grid")}
-              className={`rounded-r-md px-2 py-1 ${viewMode === "grid" ? "bg-gray-100 text-gray-900" : "text-gray-400 hover:text-gray-600"}`}
+              className={`px-2.5 py-1.5 transition ${viewMode === "grid" ? "bg-slate-100 text-slate-800" : "text-slate-400 hover:text-slate-600"}`}
               title="Grid view"
             >
               <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -157,13 +157,13 @@ export function BrowserPage() {
               <button
                 onClick={handleSaveOrder}
                 disabled={!pendingOrder || saveDirConfig.isPending}
-                className="rounded-md bg-indigo-600 px-3 py-1 text-sm text-white hover:bg-indigo-700 disabled:opacity-50"
+                className="rounded-lg bg-accent-600 px-3.5 py-1.5 text-sm font-medium text-white shadow-sm transition hover:bg-accent-700 disabled:opacity-50"
               >
                 {saveDirConfig.isPending ? "Saving..." : "Save Order"}
               </button>
               <button
                 onClick={handleCancelReorder}
-                className="rounded-md border border-gray-300 px-3 py-1 text-sm text-gray-700 hover:bg-gray-50"
+                className="rounded-lg bg-white/80 px-3.5 py-1.5 text-sm font-medium text-slate-600 shadow-sm ring-1 ring-slate-200 transition hover:bg-white"
               >
                 Cancel
               </button>
@@ -173,14 +173,14 @@ export function BrowserPage() {
               {viewMode === "grid" && (data?.objects?.length ?? 0) > 1 && (
                 <button
                   onClick={() => setIsReordering(true)}
-                  className="rounded-md border border-gray-300 px-3 py-1 text-sm text-gray-700 hover:bg-gray-50"
+                  className="rounded-lg bg-white/80 px-3.5 py-1.5 text-sm font-medium text-slate-600 shadow-sm ring-1 ring-slate-200 transition hover:bg-white"
                 >
                   Reorder
                 </button>
               )}
               <button
                 onClick={() => setShowCreateFolder(true)}
-                className="rounded-md border border-gray-300 px-3 py-1 text-sm text-gray-700 hover:bg-gray-50"
+                className="rounded-lg bg-white/80 px-3.5 py-1.5 text-sm font-medium text-slate-600 shadow-sm ring-1 ring-slate-200 transition hover:bg-white"
               >
                 New Folder
               </button>
@@ -190,12 +190,12 @@ export function BrowserPage() {
       </div>
 
       {/* Object list */}
-      <div className="mb-6 rounded-lg border border-gray-200 bg-white">
+      <div className="mb-6 overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200/60">
         {isLoading && (
-          <div className="py-8 text-center text-gray-400">Loading...</div>
+          <div className="py-12 text-center text-sm text-slate-400">Loading...</div>
         )}
         {error && (
-          <div className="py-8 text-center text-red-500">
+          <div className="py-12 text-center text-sm text-red-500">
             {error instanceof Error ? error.message : "Failed to load"}
           </div>
         )}

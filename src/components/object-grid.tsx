@@ -56,13 +56,13 @@ function thumbUrl(siteUrl: string, transforms: TransformInfo[], key: string): st
 }
 
 const FolderIcon = () => (
-  <svg className="h-5 w-5 shrink-0 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
+  <svg className="h-5 w-5 shrink-0 text-amber-400" fill="currentColor" viewBox="0 0 20 20">
     <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
   </svg>
 );
 
 const FileIcon = () => (
-  <svg className="h-5 w-5 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+  <svg className="h-5 w-5 shrink-0 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
       d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
   </svg>
@@ -99,7 +99,7 @@ function RetryImg({ src, alt, className }: { src: string; alt: string; className
 const DeleteButton = ({ onClick }: { onClick: () => void }) => (
   <button
     onClick={(e) => { e.stopPropagation(); onClick(); }}
-    className="shrink-0 rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-600"
+    className="shrink-0 rounded-md p-1 text-slate-300 transition hover:bg-red-50 hover:text-red-500"
     title="Delete"
   >
     <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -114,15 +114,15 @@ function ListView({
   onFolderClick, onFileClick, onDeleteClick,
 }: Omit<ObjectGridProps, "viewMode">) {
   return (
-    <div className="divide-y divide-gray-100">
+    <div className="divide-y divide-slate-100/80">
       {folders.map((folder) => (
         <button
           key={folder}
           onClick={() => onFolderClick(folder)}
-          className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-gray-50"
+          className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition hover:bg-slate-50"
         >
           <FolderIcon />
-          <span className="text-sm font-medium text-gray-900">
+          <span className="text-sm font-medium text-slate-700">
             {folderName(folder, prefix)}
           </span>
         </button>
@@ -133,24 +133,24 @@ function ListView({
         return (
           <div
             key={obj.key}
-            className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50"
+            className="flex items-center gap-3 px-4 py-2.5 transition hover:bg-slate-50"
           >
             {thumb ? (
               <RetryImg
                 src={thumb}
                 alt=""
-                className="h-8 w-8 shrink-0 rounded object-cover bg-gray-100"
+                className="h-8 w-8 shrink-0 rounded-md object-cover bg-slate-100"
               />
             ) : (
               <FileIcon />
             )}
             <button
               onClick={() => onFileClick(obj)}
-              className="min-w-0 flex-1 text-left text-sm text-gray-900 hover:text-indigo-600 hover:underline"
+              className="min-w-0 flex-1 text-left text-sm text-slate-700 transition hover:text-accent-600"
             >
               {fileName(obj.key, prefix)}
             </button>
-            <span className="shrink-0 text-xs text-gray-400">
+            <span className="shrink-0 text-xs text-slate-400">
               {formatSize(obj.size)}
             </span>
             <DeleteButton onClick={() => onDeleteClick(obj.key)} />
@@ -168,16 +168,16 @@ function GridView({
   return (
     <div>
       {folders.length > 0 && (
-        <div className="border-b border-gray-100 p-3">
+        <div className="border-b border-slate-100 p-3">
           <div className="flex flex-wrap gap-2">
             {folders.map((folder) => (
               <button
                 key={folder}
                 onClick={() => onFolderClick(folder)}
-                className="flex items-center gap-2 rounded-md border border-gray-200 px-3 py-1.5 text-sm hover:bg-gray-50"
+                className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-1.5 text-sm transition hover:bg-slate-100"
               >
                 <FolderIcon />
-                <span className="font-medium text-gray-900">
+                <span className="font-medium text-slate-700">
                   {folderName(folder, prefix)}
                 </span>
               </button>
@@ -186,7 +186,7 @@ function GridView({
         </div>
       )}
 
-      <div className="grid grid-cols-3 gap-1 p-1 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
+      <div className="grid grid-cols-3 gap-2 p-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
         {objects.map((obj) => {
           const thumb = thumbUrl(siteUrl, transforms, obj.key);
           const name = fileName(obj.key, prefix);
@@ -194,28 +194,30 @@ function GridView({
             <div key={obj.key} className="group relative">
               <button
                 onClick={() => onFileClick(obj)}
-                className="block w-full overflow-hidden rounded-md bg-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="block w-full overflow-hidden rounded-lg bg-slate-100 shadow-sm transition hover:shadow-md focus:outline-none focus:ring-2 focus:ring-accent-500 focus:ring-offset-1"
                 style={{ aspectRatio: "1" }}
               >
                 {thumb ? (
                   <RetryImg
                     src={thumb}
                     alt={name}
-                    className="h-full w-full object-cover"
+                    className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]"
                   />
                 ) : (
                   <div className="flex h-full w-full flex-col items-center justify-center gap-1 p-2">
                     <FileIcon />
-                    <span className="text-[10px] text-gray-400 truncate w-full text-center">
+                    <span className="text-[10px] text-slate-400 truncate w-full text-center">
                       {name}
                     </span>
                   </div>
                 )}
               </button>
-              <div className="absolute right-1 top-1 opacity-0 transition group-hover:opacity-100">
-                <DeleteButton onClick={() => onDeleteClick(obj.key)} />
+              <div className="absolute right-1 top-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+                <span className="inline-flex rounded-md bg-white/90 shadow-sm backdrop-blur-sm">
+                  <DeleteButton onClick={() => onDeleteClick(obj.key)} />
+                </span>
               </div>
-              <p className="mt-0.5 truncate px-0.5 text-[10px] text-gray-500" title={name}>
+              <p className="mt-1 truncate px-0.5 text-[11px] text-slate-500" title={name}>
                 {name}
               </p>
             </div>
@@ -231,7 +233,7 @@ export function ObjectGrid(props: ObjectGridProps) {
 
   if (folders.length === 0 && objects.length === 0) {
     return (
-      <div className="py-12 text-center text-gray-400">
+      <div className="py-16 text-center text-sm text-slate-400">
         This folder is empty
       </div>
     );
@@ -241,15 +243,15 @@ export function ObjectGrid(props: ObjectGridProps) {
     return (
       <div>
         {folders.length > 0 && (
-          <div className="border-b border-gray-100 p-3">
+          <div className="border-b border-slate-100 p-3">
             <div className="flex flex-wrap gap-2">
               {folders.map((folder) => (
                 <div
                   key={folder}
-                  className="flex items-center gap-2 rounded-md border border-gray-200 px-3 py-1.5 text-sm opacity-50"
+                  className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-1.5 text-sm opacity-40"
                 >
                   <FolderIcon />
-                  <span className="font-medium text-gray-900">
+                  <span className="font-medium text-slate-700">
                     {folderName(folder, prefix)}
                   </span>
                 </div>
