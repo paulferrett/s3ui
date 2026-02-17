@@ -33,7 +33,7 @@ All config via CDK context (`cdk.json` or `-c` flags). See `infra/cdk.json` for 
 ./scripts/deploy.sh                 # Build + S3 sync + CF invalidation
 ```
 
-Uses `AWS_PROFILE` env var (defaults to `lunsbok`).
+Requires `AWS_PROFILE` env var to be set.
 
 ## Project Structure
 

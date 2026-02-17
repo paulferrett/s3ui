@@ -1,0 +1,11 @@
+{
+  "name": "s3-manager-lambda",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "sharp": "^0.33.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.3"
+  }
+}

@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from "react";
-import { usePresignPut } from "../api/queries";
+import { usePresignPut, useAuthInfo } from "../api/queries";
 import { useQueryClient } from "@tanstack/react-query";
 
 interface UploadZoneProps {
@@ -19,7 +19,11 @@ export function UploadZone({ bucket, prefix }: UploadZoneProps) {
   const [uploads, setUploads] = useState<UploadProgress[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const presignPut = usePresignPut();
+  const { data: authInfo } = useAuthInfo();
+  const maxConcurrent = authInfo?.uploadConcurrency ?? 6;
   const qc = useQueryClient();
+  const activeRef = useRef(0);
+  const queueRef = useRef<File[]>([]);
 
   const uploadFile = useCallback(
     async (file: File) => {
@@ -76,16 +80,27 @@ export function UploadZone({ bucket, prefix }: UploadZoneProps) {
               : u,
           ),
         );
+      } finally {
+        activeRef.current--;
+        drainQueue();
       }
     },
     [bucket, prefix, presignPut, qc],
   );
 
+  const drainQueue = useCallback(() => {
+    while (activeRef.current < maxConcurrent && queueRef.current.length > 0) {
+      activeRef.current++;
+      uploadFile(queueRef.current.shift()!);
+    }
+  }, [uploadFile, maxConcurrent]);
+
   const handleFiles = useCallback(
     (files: FileList | File[]) => {
-      Array.from(files).forEach(uploadFile);
+      queueRef.current.push(...Array.from(files));
+      drainQueue();
     },
-    [uploadFile],
+    [drainQueue],
   );
 
   const handleDrop = useCallback(

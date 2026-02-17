@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { usePresignPut } from "../api/queries";
+import { usePresignPut, useAuthInfo } from "../api/queries";
 import { useQueryClient } from "@tanstack/react-query";
 
 interface CreateFolderDialogProps {
@@ -13,6 +13,8 @@ export function CreateFolderDialog({
   prefix,
   onClose,
 }: CreateFolderDialogProps) {
+  const { data: authInfo } = useAuthInfo();
+  const dirConfigFile = authInfo?.dirConfigFile ?? ".s3ui.json";
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
   const presignPut = usePresignPut();
@@ -24,17 +26,22 @@ export function CreateFolderDialog({
 
     setLoading(true);
     try {
-      // Create a zero-byte object with trailing slash to represent a folder
-      const key = prefix + name.trim().replace(/\/+$/, "") + "/";
+      const folder = name.trim().replace(/\/+$/, "");
+      const key = prefix + folder + "/" + dirConfigFile;
       const { url } = await presignPut.mutateAsync({
         bucket,
         key,
-        contentType: "application/x-directory",
+        contentType: "application/json",
       });
+      const config = JSON.stringify(
+        { created: new Date().toISOString() },
+        null,
+        2,
+      );
       await fetch(url, {
         method: "PUT",
-        headers: { "Content-Type": "application/x-directory" },
-        body: "",
+        headers: { "Content-Type": "application/json" },
+        body: config,
       });
       qc.invalidateQueries({ queryKey: ["objects", bucket, prefix] });
       onClose();

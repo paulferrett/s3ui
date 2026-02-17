@@ -8,6 +8,8 @@ import { apiFetch } from "./client";
 export interface AuthInfo {
   mode: string;
   buckets: string[];
+  dirConfigFile: string;
+  uploadConcurrency: number;
 }
 
 export interface S3Object {
@@ -60,7 +62,7 @@ export function usePresignPut() {
       key: string;
       contentType: string;
     }) =>
-      apiFetch<{ url: string }>("/presign/put", {
+      apiFetch<{ url: string; key: string }>("/presign/put", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ bucket, key, contentType }),
