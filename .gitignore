@@ -1,0 +1,5 @@
+node_modules/
+dist/
+infra/node_modules/
+infra/cdk.out/
+.env

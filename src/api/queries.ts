@@ -1,0 +1,82 @@
+import {
+  useQuery,
+  useMutation,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { apiFetch } from "./client";
+
+export interface AuthInfo {
+  mode: string;
+  buckets: string[];
+}
+
+export interface S3Object {
+  key: string;
+  size: number;
+  lastModified: string;
+}
+
+export interface ObjectsResponse {
+  folders: string[];
+  objects: S3Object[];
+}
+
+export function useAuthInfo() {
+  return useQuery({
+    queryKey: ["auth-info"],
+    queryFn: () => apiFetch<AuthInfo>("/auth-info"),
+    staleTime: Infinity,
+  });
+}
+
+export function useObjects(bucket: string, prefix: string) {
+  return useQuery({
+    queryKey: ["objects", bucket, prefix],
+    queryFn: () =>
+      apiFetch<ObjectsResponse>(
+        `/objects?bucket=${encodeURIComponent(bucket)}&prefix=${encodeURIComponent(prefix)}`,
+      ),
+    enabled: !!bucket,
+  });
+}
+
+export function usePresignGet() {
+  return useMutation({
+    mutationFn: ({ bucket, key }: { bucket: string; key: string }) =>
+      apiFetch<{ url: string }>(
+        `/presign/get?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(key)}`,
+      ),
+  });
+}
+
+export function usePresignPut() {
+  return useMutation({
+    mutationFn: ({
+      bucket,
+      key,
+      contentType,
+    }: {
+      bucket: string;
+      key: string;
+      contentType: string;
+    }) =>
+      apiFetch<{ url: string }>("/presign/put", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bucket, key, contentType }),
+      }),
+  });
+}
+
+export function useDeleteObject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ bucket, key }: { bucket: string; key: string }) =>
+      apiFetch("/objects?bucket=" + encodeURIComponent(bucket) + "&key=" + encodeURIComponent(key), {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["objects"] });
+    },
+  });
+}
