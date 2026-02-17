@@ -5,11 +5,20 @@ import {
 } from "@tanstack/react-query";
 import { apiFetch } from "./client";
 
+export interface TransformInfo {
+  key: string;
+  width?: number;
+  height?: number;
+  format?: string;
+}
+
 export interface AuthInfo {
   mode: string;
   buckets: string[];
   dirConfigFile: string;
   uploadConcurrency: number;
+  siteUrl?: string;
+  transforms?: TransformInfo[];
 }
 
 export interface S3Object {
@@ -67,6 +76,29 @@ export function usePresignPut() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ bucket, key, contentType }),
       }),
+  });
+}
+
+export function useSaveDirConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      bucket,
+      prefix,
+      config,
+    }: {
+      bucket: string;
+      prefix: string;
+      config: { order?: string[] };
+    }) =>
+      apiFetch("/dir-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bucket, prefix, config }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["objects"] });
+    },
   });
 }
 

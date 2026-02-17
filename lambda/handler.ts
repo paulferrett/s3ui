@@ -91,6 +91,37 @@ function contentTypeToMime(ct: string | undefined): string {
   return ct;
 }
 
+// --- Dir config helpers ---
+
+interface DirConfig {
+  order?: string[];
+}
+
+async function readDirConfig(bucket: string, prefix: string): Promise<DirConfig> {
+  const key = prefix + DIR_CONFIG_FILE;
+  try {
+    const res = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    const body = await res.Body?.transformToString();
+    return body ? JSON.parse(body) : {};
+  } catch (err: unknown) {
+    if (err && typeof err === "object" && "name" in err && (err as { name: string }).name === "NoSuchKey") return {};
+    return {};
+  }
+}
+
+function applyOrder<T>(items: T[], getFilename: (item: T) => string, order?: string[]): T[] {
+  if (!order || order.length === 0) return items;
+  const orderIndex = new Map(order.map((name, i) => [name, i]));
+  return [...items].sort((a, b) => {
+    const ai = orderIndex.get(getFilename(a));
+    const bi = orderIndex.get(getFilename(b));
+    if (ai !== undefined && bi !== undefined) return ai - bi;
+    if (ai !== undefined) return -1;
+    if (bi !== undefined) return 1;
+    return getFilename(a).localeCompare(getFilename(b));
+  });
+}
+
 // Parallel HeadObject with concurrency limit
 async function headObjectsParallel(
   bucket: string,
@@ -174,15 +205,20 @@ export async function handler(event: {
       }),
     );
 
+    const objects = (result.Contents ?? [])
+      .filter((o) => o.Key !== prefix && !o.Key?.endsWith("/" + DIR_CONFIG_FILE))
+      .map((o) => ({
+        key: o.Key!,
+        size: o.Size ?? 0,
+        lastModified: o.LastModified?.toISOString() ?? "",
+      }));
+
+    const dirConfig = await readDirConfig(bucket, prefix);
+    const ordered = applyOrder(objects, (o) => o.key.slice(prefix.length), dirConfig.order);
+
     return json(200, {
       folders: (result.CommonPrefixes ?? []).map((p) => p.Prefix),
-      objects: (result.Contents ?? [])
-        .filter((o) => o.Key !== prefix && !o.Key?.endsWith("/" + DIR_CONFIG_FILE))
-        .map((o) => ({
-          key: o.Key,
-          size: o.Size,
-          lastModified: o.LastModified?.toISOString(),
-        })),
+      objects: ordered,
     });
   }
 
@@ -297,12 +333,23 @@ export async function handler(event: {
       });
     }
 
-    // Sort dirs and files
+    // Read dir configs in parallel for ordering
+    const dirNames = Array.from(dirMap.keys());
+    const dirConfigs = new Map<string, DirConfig>();
+    await Promise.all(
+      dirNames.map(async (dir) => {
+        const cfgPrefix = dir ? dir + "/" : "";
+        const cfg = await readDirConfig(bucket, cfgPrefix);
+        dirConfigs.set(dir, cfg);
+      }),
+    );
+
+    // Sort dirs and files (applying custom order per directory)
     const dirs = Array.from(dirMap.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([dir, files]) => ({
         dir,
-        files: files.sort((a, b) => a.file.localeCompare(b.file)),
+        files: applyOrder(files, (f) => f.file, dirConfigs.get(dir)?.order),
       }));
 
     return json(200, {
@@ -318,6 +365,32 @@ export async function handler(event: {
       })),
       dirs,
     });
+  }
+
+  // GET /api/dir-config?bucket=&prefix=
+  if (method === "GET" && path === "/api/dir-config") {
+    const bucket = query.bucket;
+    if (!validBucket(bucket)) return json(400, { error: "Invalid bucket" });
+    const prefix = query.prefix ?? "";
+    const config = await readDirConfig(bucket, prefix);
+    return json(200, config);
+  }
+
+  // POST /api/dir-config  body: { bucket, prefix, config }
+  if (method === "POST" && path === "/api/dir-config") {
+    const body = JSON.parse(event.body ?? "{}");
+    const { bucket, prefix, config } = body;
+    if (!validBucket(bucket)) return json(400, { error: "Invalid bucket" });
+    const key = (prefix ?? "") + DIR_CONFIG_FILE;
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        Body: JSON.stringify(config, null, 2),
+        ContentType: "application/json",
+      }),
+    );
+    return json(200, { ok: true });
   }
 
   return json(404, { error: "Not found" });

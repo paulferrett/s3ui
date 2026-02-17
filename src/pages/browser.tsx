@@ -1,9 +1,9 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import { useSearch, useNavigate } from "@tanstack/react-router";
-import { useObjects, useAuthInfo, type S3Object } from "../api/queries";
+import { useObjects, useAuthInfo, useSaveDirConfig, type S3Object } from "../api/queries";
 import { useAuth } from "../auth/use-token";
 import { Breadcrumb } from "../components/breadcrumb";
-import { ObjectGrid } from "../components/object-grid";
+import { ObjectGrid, type ViewMode } from "../components/object-grid";
 import { UploadZone } from "../components/upload-zone";
 import { PreviewModal } from "../components/preview-modal";
 import { DeleteDialog } from "../components/delete-dialog";
@@ -18,12 +18,18 @@ export function BrowserPage() {
   const buckets = authInfo?.buckets ?? [];
   const bucket = search.bucket ?? buckets[0] ?? "";
   const prefix = search.prefix ?? "";
+  const siteUrl = authInfo?.siteUrl ?? "";
+  const transforms = authInfo?.transforms ?? [];
 
   const { data, isLoading, error } = useObjects(bucket, prefix);
 
   const [previewKey, setPreviewKey] = useState<string | null>(null);
   const [deleteKey, setDeleteKey] = useState<string | null>(null);
   const [showCreateFolder, setShowCreateFolder] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>("grid");
+  const [isReordering, setIsReordering] = useState(false);
+  const [pendingOrder, setPendingOrder] = useState<string[] | null>(null);
+  const saveDirConfig = useSaveDirConfig();
 
   const setParams = useCallback(
     (params: Record<string, string>) => {
@@ -46,6 +52,50 @@ export function BrowserPage() {
     (newBucket: string) => setParams({ bucket: newBucket, prefix: "" }),
     [setParams],
   );
+
+  // Reset reorder mode on directory change
+  useEffect(() => {
+    setIsReordering(false);
+    setPendingOrder(null);
+  }, [prefix]);
+
+  const handleOrderChange = useCallback((order: string[]) => {
+    setPendingOrder(order);
+  }, []);
+
+  const handleSaveOrder = useCallback(async () => {
+    if (!pendingOrder) return;
+    await saveDirConfig.mutateAsync({
+      bucket,
+      prefix,
+      config: { order: pendingOrder },
+    });
+    setIsReordering(false);
+    setPendingOrder(null);
+  }, [bucket, prefix, pendingOrder, saveDirConfig]);
+
+  const handleCancelReorder = useCallback(() => {
+    setIsReordering(false);
+    setPendingOrder(null);
+  }, []);
+
+  const displayObjects = useMemo(() => {
+    if (!data?.objects || !pendingOrder) return data?.objects ?? [];
+    const byFilename = new Map(data.objects.map((o) => [o.key.slice(prefix.length), o]));
+    const ordered: S3Object[] = [];
+    for (const name of pendingOrder) {
+      const obj = byFilename.get(name);
+      if (obj) {
+        ordered.push(obj);
+        byFilename.delete(name);
+      }
+    }
+    // Append any remaining objects not in pendingOrder
+    for (const obj of byFilename.values()) {
+      ordered.push(obj);
+    }
+    return ordered;
+  }, [data?.objects, pendingOrder, prefix]);
 
   return (
     <div className="mx-auto min-h-screen max-w-4xl p-4">
@@ -80,12 +130,63 @@ export function BrowserPage() {
       {/* Breadcrumb + actions */}
       <div className="mb-4 flex items-center justify-between">
         <Breadcrumb prefix={prefix} onNavigate={onNavigate} />
-        <button
-          onClick={() => setShowCreateFolder(true)}
-          className="rounded-md border border-gray-300 px-3 py-1 text-sm text-gray-700 hover:bg-gray-50"
-        >
-          New Folder
-        </button>
+        <div className="flex items-center gap-2">
+          {/* View toggle */}
+          <div className="flex rounded-md border border-gray-300">
+            <button
+              onClick={() => setViewMode("list")}
+              className={`rounded-l-md px-2 py-1 ${viewMode === "list" ? "bg-gray-100 text-gray-900" : "text-gray-400 hover:text-gray-600"}`}
+              title="List view"
+            >
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+            <button
+              onClick={() => setViewMode("grid")}
+              className={`rounded-r-md px-2 py-1 ${viewMode === "grid" ? "bg-gray-100 text-gray-900" : "text-gray-400 hover:text-gray-600"}`}
+              title="Grid view"
+            >
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+              </svg>
+            </button>
+          </div>
+          {isReordering ? (
+            <>
+              <button
+                onClick={handleSaveOrder}
+                disabled={!pendingOrder || saveDirConfig.isPending}
+                className="rounded-md bg-indigo-600 px-3 py-1 text-sm text-white hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {saveDirConfig.isPending ? "Saving..." : "Save Order"}
+              </button>
+              <button
+                onClick={handleCancelReorder}
+                className="rounded-md border border-gray-300 px-3 py-1 text-sm text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <>
+              {viewMode === "grid" && (data?.objects?.length ?? 0) > 1 && (
+                <button
+                  onClick={() => setIsReordering(true)}
+                  className="rounded-md border border-gray-300 px-3 py-1 text-sm text-gray-700 hover:bg-gray-50"
+                >
+                  Reorder
+                </button>
+              )}
+              <button
+                onClick={() => setShowCreateFolder(true)}
+                className="rounded-md border border-gray-300 px-3 py-1 text-sm text-gray-700 hover:bg-gray-50"
+              >
+                New Folder
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Object list */}
@@ -101,11 +202,16 @@ export function BrowserPage() {
         {data && (
           <ObjectGrid
             folders={data.folders}
-            objects={data.objects}
+            objects={displayObjects}
             prefix={prefix}
+            viewMode={viewMode}
+            siteUrl={siteUrl}
+            transforms={transforms}
             onFolderClick={onNavigate}
             onFileClick={(obj: S3Object) => setPreviewKey(obj.key)}
             onDeleteClick={(key: string) => setDeleteKey(key)}
+            isReordering={isReordering}
+            onOrderChange={handleOrderChange}
           />
         )}
       </div>
