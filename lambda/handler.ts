@@ -2,17 +2,26 @@ import {
   S3Client,
   ListObjectsV2Command,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
   PutObjectCommand,
   HeadObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import {
+  CloudFrontClient,
+  CreateInvalidationCommand,
+} from "@aws-sdk/client-cloudfront";
 import { authenticate } from "./auth.js";
+import sharp from "sharp";
+import { analyzeImage } from "./describe.js";
 
 const s3 = new S3Client({});
+const cf = new CloudFrontClient({});
 const BUCKETS: string[] = JSON.parse(process.env.BUCKETS ?? "[]");
 const AUTH_MODE = process.env.AUTH_MODE ?? "setup";
 const SITE_URL = process.env.SITE_URL;
+const DISTRIBUTION_ID = process.env.DISTRIBUTION_ID;
 const DIR_CONFIG_FILE = process.env.DIR_CONFIG_FILE ?? ".s3ui.json";
 const UPLOAD_CONCURRENCY = Number(process.env.UPLOAD_CONCURRENCY ?? "10");
 
@@ -93,8 +102,18 @@ function contentTypeToMime(ct: string | undefined): string {
 
 // --- Dir config helpers ---
 
+interface PhotoMeta {
+  file: string;
+  description: string;
+  altText: string;
+  tags: string[];
+  quality: number;
+  generated: string;
+}
+
 interface DirConfig {
   order?: string[];
+  photoMetas?: PhotoMeta[];
 }
 
 async function readDirConfig(bucket: string, prefix: string): Promise<DirConfig> {
@@ -183,6 +202,13 @@ export async function handler(event: {
       buckets: BUCKETS,
       dirConfigFile: DIR_CONFIG_FILE,
       uploadConcurrency: UPLOAD_CONCURRENCY,
+      siteUrl: SITE_URL ?? "",
+      transforms: TRANSFORMS.map((t) => ({
+        key: t.key,
+        ...(t.width && { width: t.width }),
+        ...(t.height && { height: t.height }),
+        ...(t.format && { format: t.format }),
+      })),
     });
   }
 
@@ -344,13 +370,29 @@ export async function handler(event: {
       }),
     );
 
-    // Sort dirs and files (applying custom order per directory)
+    // Sort dirs and files (applying custom order per directory), merge photoMetas
     const dirs = Array.from(dirMap.entries())
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([dir, files]) => ({
-        dir,
-        files: applyOrder(files, (f) => f.file, dirConfigs.get(dir)?.order),
-      }));
+      .map(([dir, files]) => {
+        const cfg = dirConfigs.get(dir);
+        const metaMap = new Map((cfg?.photoMetas ?? []).map((m) => [m.file, m]));
+        const ordered = applyOrder(files, (f) => f.file, cfg?.order);
+        return {
+          dir,
+          files: ordered.map((f) => {
+            const meta = metaMap.get(f.file);
+            return {
+              ...f,
+              ...(meta && {
+                description: meta.description,
+                altText: meta.altText,
+                tags: meta.tags,
+                quality: meta.quality,
+              }),
+            };
+          }),
+        };
+      });
 
     return json(200, {
       bucket,
@@ -381,16 +423,157 @@ export async function handler(event: {
     const body = JSON.parse(event.body ?? "{}");
     const { bucket, prefix, config } = body;
     if (!validBucket(bucket)) return json(400, { error: "Invalid bucket" });
-    const key = (prefix ?? "") + DIR_CONFIG_FILE;
+    const pfx = prefix ?? "";
+    // Read-merge-write to avoid clobbering photoMetas from describe Lambda
+    const existing = await readDirConfig(bucket, pfx);
+    const merged = { ...existing, ...config };
+    const key = pfx + DIR_CONFIG_FILE;
     await s3.send(
       new PutObjectCommand({
         Bucket: bucket,
         Key: key,
-        Body: JSON.stringify(config, null, 2),
+        Body: JSON.stringify(merged, null, 2),
         ContentType: "application/json",
       }),
     );
     return json(200, { ok: true });
+  }
+
+  // POST /api/rotate  body: { bucket, key, direction: "cw" | "ccw" }
+  if (method === "POST" && path === "/api/rotate") {
+    const body = JSON.parse(event.body ?? "{}");
+    const { bucket, key, direction } = body;
+    if (!validBucket(bucket) || !key)
+      return json(400, { error: "Invalid bucket or key" });
+    if (direction !== "cw" && direction !== "ccw")
+      return json(400, { error: "Invalid direction, must be 'cw' or 'ccw'" });
+
+    try {
+      // Download the original image
+      const getRes = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+      const buf = Buffer.from(await getRes.Body!.transformToByteArray());
+      const contentType = getRes.ContentType ?? "image/jpeg";
+
+      // Rotate with sharp (cw = 90°, ccw = -90°)
+      const angle = direction === "cw" ? 90 : -90;
+      const rotated = await sharp(buf).rotate(angle).toBuffer();
+
+      // Re-upload to same key
+      await s3.send(new PutObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        Body: rotated,
+        ContentType: contentType,
+      }));
+
+      // Delete existing transform outputs so S3 event triggers regeneration
+      const cfPaths: string[] = [];
+      if (TRANSFORM_PREFIXES.length > 0) {
+        const ext = key.split(".").pop()?.toLowerCase() ?? "";
+        const baseName = key.lastIndexOf(".") !== -1 ? key.substring(0, key.lastIndexOf(".")) : key;
+        const keysToDelete: string[] = [];
+        for (const t of TRANSFORMS) {
+          const tExt = t.format ?? ext;
+          const tKey = `${t.key}/${baseName}.${tExt}`;
+          keysToDelete.push(tKey);
+          cfPaths.push(`/${tKey}`);
+        }
+        if (keysToDelete.length > 0) {
+          await s3.send(new DeleteObjectsCommand({
+            Bucket: bucket,
+            Delete: { Objects: keysToDelete.map((k) => ({ Key: k })) },
+          }));
+        }
+      }
+
+      // Invalidate CloudFront cache for the original + transform paths
+      if (DISTRIBUTION_ID) {
+        cfPaths.push(`/${key}`);
+        try {
+          await cf.send(new CreateInvalidationCommand({
+            DistributionId: DISTRIBUTION_ID,
+            InvalidationBatch: {
+              CallerReference: `rotate-${Date.now()}`,
+              Paths: { Quantity: cfPaths.length, Items: cfPaths },
+            },
+          }));
+        } catch (cfErr) {
+          console.error("CloudFront invalidation failed:", cfErr);
+          // Non-fatal — rotation still succeeded
+        }
+      }
+
+      return json(200, { ok: true });
+    } catch (err) {
+      console.error("Rotate failed:", err);
+      return json(500, { error: "Rotate failed" });
+    }
+  }
+
+  // POST /api/describe  body: { bucket, key }
+  if (method === "POST" && path === "/api/describe") {
+    const body = JSON.parse(event.body ?? "{}");
+    const { bucket, key: imageKey } = body;
+    if (!validBucket(bucket) || !imageKey)
+      return json(400, { error: "Invalid bucket or key" });
+    if (!isImage(imageKey))
+      return json(400, { error: "Not an image" });
+
+    try {
+      const getRes = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: imageKey }));
+      const buf = Buffer.from(await getRes.Body!.transformToByteArray());
+
+      // Resize large images to fit within Claude's 5MB base64 limit
+      let imageBuf = buf;
+      if (buf.length > 4.5 * 1024 * 1024) {
+        imageBuf = await sharp(buf)
+          .rotate()
+          .resize({ width: 1600, height: 1600, fit: "inside", withoutEnlargement: true })
+          .jpeg({ quality: 80 })
+          .toBuffer();
+      }
+
+      const imageBase64 = imageBuf.toString("base64");
+      const ext = imageKey.split(".").pop()?.toLowerCase();
+      // If we resized, output is always JPEG
+      const mediaType = (imageBuf !== buf) ? "image/jpeg" as const
+        : ext === "png" ? "image/png" as const
+        : ext === "gif" ? "image/gif" as const
+        : ext === "webp" ? "image/webp" as const
+        : "image/jpeg" as const;
+
+      const result = await analyzeImage(imageBase64, mediaType);
+
+      const lastSlash = imageKey.lastIndexOf("/");
+      const prefix = lastSlash === -1 ? "" : imageKey.substring(0, lastSlash + 1);
+      const filename = lastSlash === -1 ? imageKey : imageKey.substring(lastSlash + 1);
+
+      // Read-merge-write
+      const config = await readDirConfig(bucket, prefix);
+      const metas = config.photoMetas ?? [];
+      const meta: PhotoMeta = {
+        file: filename,
+        ...result,
+        generated: new Date().toISOString(),
+      };
+      const idx = metas.findIndex((m) => m.file === filename);
+      if (idx >= 0) metas[idx] = meta;
+      else metas.push(meta);
+      config.photoMetas = metas;
+
+      const cfgKey = prefix + DIR_CONFIG_FILE;
+      await s3.send(new PutObjectCommand({
+        Bucket: bucket,
+        Key: cfgKey,
+        Body: JSON.stringify(config, null, 2),
+        ContentType: "application/json",
+      }));
+
+      return json(200, { ok: true, meta });
+    } catch (err) {
+      console.error("Describe failed:", err);
+      return json(500, { error: "Describe failed" });
+    }
   }
 
   return json(404, { error: "Not found" });

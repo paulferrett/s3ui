@@ -70,8 +70,24 @@ function outputKey(transformKey: string, originalKey: string, format?: string): 
   return out;
 }
 
-export async function handler(event: { Records: S3EventRecord[] }) {
+/** Extract S3 event records from either direct S3 events or SNS-wrapped S3 events. */
+function extractS3Records(event: { Records: Array<S3EventRecord | { Sns?: { Message: string } }> }): S3EventRecord[] {
+  const records: S3EventRecord[] = [];
   for (const record of event.Records) {
+    if ("Sns" in record && record.Sns) {
+      // SNS-wrapped S3 event
+      const s3Event = JSON.parse(record.Sns.Message) as { Records?: S3EventRecord[] };
+      if (s3Event.Records) records.push(...s3Event.Records);
+    } else {
+      // Direct S3 event
+      records.push(record as S3EventRecord);
+    }
+  }
+  return records;
+}
+
+export async function handler(event: { Records: Array<S3EventRecord | { Sns?: { Message: string } }> }) {
+  for (const record of extractS3Records(event)) {
     const bucket = record.s3.bucket.name;
     const key = decodeURIComponent(
       record.s3.object.key.replace(/\+/g, " "),

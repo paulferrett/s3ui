@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo, useEffect } from "react";
 import { useSearch, useNavigate } from "@tanstack/react-router";
-import { useObjects, useAuthInfo, useSaveDirConfig, type S3Object } from "../api/queries";
+import { useObjects, useAuthInfo, useSaveDirConfig, useDeleteObject, useRotateImage, useDescribeImage, type S3Object } from "../api/queries";
 import { useAuth } from "../auth/use-token";
 import { Breadcrumb } from "../components/breadcrumb";
 import { ObjectGrid, type ViewMode } from "../components/object-grid";
@@ -25,11 +25,17 @@ export function BrowserPage() {
 
   const [previewKey, setPreviewKey] = useState<string | null>(null);
   const [deleteKey, setDeleteKey] = useState<string | null>(null);
+  const [bulkDeleteKeys, setBulkDeleteKeys] = useState<string[] | null>(null);
   const [showCreateFolder, setShowCreateFolder] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
   const [isReordering, setIsReordering] = useState(false);
   const [pendingOrder, setPendingOrder] = useState<string[] | null>(null);
   const saveDirConfig = useSaveDirConfig();
+  const deleteMutation = useDeleteObject();
+  const rotateMutation = useRotateImage();
+  const describeMutation = useDescribeImage();
+  const [cacheBusts, setCacheBusts] = useState<Map<string, number>>(new Map());
+  const dirConfigFile = authInfo?.dirConfigFile ?? ".s3ui.json";
 
   const setParams = useCallback(
     (params: Record<string, string>) => {
@@ -207,9 +213,25 @@ export function BrowserPage() {
             viewMode={viewMode}
             siteUrl={siteUrl}
             transforms={transforms}
+            dirConfigFile={dirConfigFile}
             onFolderClick={onNavigate}
             onFileClick={(obj: S3Object) => setPreviewKey(obj.key)}
             onDeleteClick={(key: string) => setDeleteKey(key)}
+            onRotateClick={(key: string, direction: "cw" | "ccw") =>
+              rotateMutation.mutate({ bucket, key, direction }, {
+                onSuccess: () => {
+                  // Wait for transform Lambda to regenerate thumbnails, then bust cache
+                  setTimeout(() => {
+                    setCacheBusts((prev) => new Map(prev).set(key, Date.now()));
+                  }, 5000);
+                },
+              })
+            }
+            onDescribeClick={(key: string) =>
+              describeMutation.mutate({ bucket, key })
+            }
+            cacheBusts={cacheBusts}
+            onBulkDelete={(keys: string[]) => setBulkDeleteKeys(keys)}
             isReordering={isReordering}
             onOrderChange={handleOrderChange}
           />
@@ -241,6 +263,56 @@ export function BrowserPage() {
           onClose={() => setShowCreateFolder(false)}
         />
       )}
+      {bulkDeleteKeys && bulkDeleteKeys.length > 0 && (
+        <BulkDeleteDialog
+          count={bulkDeleteKeys.length}
+          onConfirm={async () => {
+            for (const key of bulkDeleteKeys) {
+              await deleteMutation.mutateAsync({ bucket, key });
+            }
+            setBulkDeleteKeys(null);
+          }}
+          onClose={() => setBulkDeleteKeys(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function BulkDeleteDialog({ count, onConfirm, onClose }: { count: number; onConfirm: () => Promise<void>; onClose: () => void }) {
+  const [loading, setLoading] = useState(false);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="mx-4 w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl ring-1 ring-black/5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="mb-2 text-sm font-medium text-slate-800">
+          Delete {count} file{count === 1 ? "" : "s"}?
+        </h2>
+        <p className="mb-5 text-sm text-slate-500">
+          This will permanently delete the selected files. This cannot be undone.
+        </p>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="rounded-lg px-3.5 py-1.5 text-sm text-slate-600 transition hover:bg-slate-100"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={async () => { setLoading(true); await onConfirm(); }}
+            disabled={loading}
+            className="rounded-lg bg-red-600 px-3.5 py-1.5 text-sm font-medium text-white shadow-sm transition hover:bg-red-700 disabled:opacity-50"
+          >
+            {loading ? "Deleting..." : `Delete ${count} file${count === 1 ? "" : "s"}`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

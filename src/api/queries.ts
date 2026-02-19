@@ -114,3 +114,41 @@ export function useDeleteObject() {
     },
   });
 }
+
+export function useRotateImage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      bucket,
+      key,
+      direction,
+    }: {
+      bucket: string;
+      key: string;
+      direction: "cw" | "ccw";
+    }) =>
+      apiFetch("/rotate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bucket, key, direction }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["objects"] });
+    },
+  });
+}
+
+export function useDescribeImage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ bucket, key }: { bucket: string; key: string }) =>
+      apiFetch<{ ok: boolean; meta: unknown }>("/describe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bucket, key }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["objects"] });
+    },
+  });
+}

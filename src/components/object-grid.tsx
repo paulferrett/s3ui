@@ -12,9 +12,15 @@ interface ObjectGridProps {
   viewMode: ViewMode;
   siteUrl: string;
   transforms: TransformInfo[];
+  dirConfigFile: string;
   onFolderClick: (folder: string) => void;
   onFileClick: (obj: S3Object) => void;
   onDeleteClick: (key: string) => void;
+  onRotateClick?: (key: string, direction: "cw" | "ccw") => void;
+  onDescribeClick?: (key: string) => void;
+  /** Map of key → timestamp for cache-busting after rotation */
+  cacheBusts?: Map<string, number>;
+  onBulkDelete?: (keys: string[]) => void;
   isReordering?: boolean;
   onOrderChange?: (order: string[]) => void;
 }
@@ -40,7 +46,7 @@ function isImage(key: string): boolean {
   return /\.(jpe?g|png|gif|webp|avif|tiff?)$/i.test(key);
 }
 
-function thumbUrl(siteUrl: string, transforms: TransformInfo[], key: string): string | null {
+function thumbUrl(siteUrl: string, transforms: TransformInfo[], key: string, cacheBust?: number): string | null {
   if (!siteUrl || !isImage(key)) return null;
   // Prefer thumb, then thumb-sq, then first available
   const t = transforms.find((t) => t.key === "thumb")
@@ -52,6 +58,7 @@ function thumbUrl(siteUrl: string, transforms: TransformInfo[], key: string): st
     const lastDot = url.lastIndexOf(".");
     if (lastDot !== -1) url = `${url.substring(0, lastDot)}.${t.format}`;
   }
+  if (cacheBust) url += `?v=${cacheBust}`;
   return url;
 }
 
@@ -109,10 +116,61 @@ const DeleteButton = ({ onClick }: { onClick: () => void }) => (
   </button>
 );
 
+const RotateCCWButton = ({ onClick }: { onClick: () => void }) => (
+  <button
+    onClick={(e) => { e.stopPropagation(); onClick(); }}
+    className="shrink-0 rounded-md p-1 text-slate-300 transition hover:bg-blue-50 hover:text-blue-500"
+    title="Rotate left"
+  >
+    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+        d="M2.5 2v6h6M2.66 15.57a10 10 0 10.57-8.38" />
+    </svg>
+  </button>
+);
+
+const RotateCWButton = ({ onClick }: { onClick: () => void }) => (
+  <button
+    onClick={(e) => { e.stopPropagation(); onClick(); }}
+    className="shrink-0 rounded-md p-1 text-slate-300 transition hover:bg-blue-50 hover:text-blue-500"
+    title="Rotate right"
+  >
+    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ transform: "scaleX(-1)" }}>
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+        d="M2.5 2v6h6M2.66 15.57a10 10 0 10.57-8.38" />
+    </svg>
+  </button>
+);
+
+const AnalyzeButton = ({ onClick }: { onClick: () => void }) => (
+  <button
+    onClick={(e) => { e.stopPropagation(); onClick(); }}
+    className="shrink-0 rounded-md p-1 text-slate-300 transition hover:bg-purple-50 hover:text-purple-500"
+    title="Analyze with AI"
+  >
+    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+        d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456zM16.894 20.567L16.5 21.75l-.394-1.183a2.25 2.25 0 00-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 001.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 001.423 1.423l1.183.394-1.183.394a2.25 2.25 0 00-1.423 1.423z" />
+    </svg>
+  </button>
+);
+
+const Checkbox = ({ checked, onChange }: { checked: boolean; onChange: (checked: boolean) => void }) => (
+  <label className="flex items-center" onClick={(e) => e.stopPropagation()}>
+    <input
+      type="checkbox"
+      checked={checked}
+      onChange={(e) => onChange(e.target.checked)}
+      className="h-4 w-4 rounded border-slate-300 text-accent-600 focus:ring-accent-500"
+    />
+  </label>
+);
+
 function ListView({
-  folders, objects, prefix, siteUrl, transforms,
-  onFolderClick, onFileClick, onDeleteClick,
-}: Omit<ObjectGridProps, "viewMode">) {
+  folders, objects, prefix, siteUrl, transforms, cacheBusts,
+  onFolderClick, onFileClick, onDeleteClick, onRotateClick, onDescribeClick,
+  selected, onToggleSelect,
+}: Omit<ObjectGridProps, "viewMode"> & { selected: Set<string>; onToggleSelect: (key: string, checked: boolean) => void }) {
   return (
     <div className="divide-y divide-slate-100/80">
       {folders.map((folder) => (
@@ -129,12 +187,13 @@ function ListView({
       ))}
 
       {objects.map((obj) => {
-        const thumb = thumbUrl(siteUrl, transforms, obj.key);
+        const thumb = thumbUrl(siteUrl, transforms, obj.key, cacheBusts?.get(obj.key));
         return (
           <div
             key={obj.key}
             className="flex items-center gap-3 px-4 py-2.5 transition hover:bg-slate-50"
           >
+            <Checkbox checked={selected.has(obj.key)} onChange={(c) => onToggleSelect(obj.key, c)} />
             {thumb ? (
               <RetryImg
                 src={thumb}
@@ -153,6 +212,15 @@ function ListView({
             <span className="shrink-0 text-xs text-slate-400">
               {formatSize(obj.size)}
             </span>
+            {onRotateClick && isImage(obj.key) && (
+              <>
+                <RotateCCWButton onClick={() => onRotateClick(obj.key, "ccw")} />
+                <RotateCWButton onClick={() => onRotateClick(obj.key, "cw")} />
+              </>
+            )}
+            {onDescribeClick && isImage(obj.key) && (
+              <AnalyzeButton onClick={() => onDescribeClick(obj.key)} />
+            )}
             <DeleteButton onClick={() => onDeleteClick(obj.key)} />
           </div>
         );
@@ -162,9 +230,13 @@ function ListView({
 }
 
 function GridView({
-  folders, objects, prefix, siteUrl, transforms,
-  onFolderClick, onFileClick, onDeleteClick,
-}: Omit<ObjectGridProps, "viewMode">) {
+  folders, objects, prefix, siteUrl, transforms, dirConfigFile, cacheBusts,
+  onFolderClick, onFileClick, onDeleteClick, onRotateClick, onDescribeClick,
+  selected, onToggleSelect,
+}: Omit<ObjectGridProps, "viewMode"> & { selected: Set<string>; onToggleSelect: (key: string, checked: boolean) => void }) {
+  // Filter out config files from grid view
+  const gridObjects = objects.filter((o) => !o.key.endsWith("/" + dirConfigFile) && !o.key.endsWith(dirConfigFile));
+
   return (
     <div>
       {folders.length > 0 && (
@@ -187,14 +259,15 @@ function GridView({
       )}
 
       <div className="grid grid-cols-3 gap-2 p-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
-        {objects.map((obj) => {
-          const thumb = thumbUrl(siteUrl, transforms, obj.key);
+        {gridObjects.map((obj) => {
+          const thumb = thumbUrl(siteUrl, transforms, obj.key, cacheBusts?.get(obj.key));
           const name = fileName(obj.key, prefix);
+          const isSelected = selected.has(obj.key);
           return (
             <div key={obj.key} className="group relative">
               <button
                 onClick={() => onFileClick(obj)}
-                className="block w-full overflow-hidden rounded-lg bg-slate-100 shadow-sm transition hover:shadow-md focus:outline-none focus:ring-2 focus:ring-accent-500 focus:ring-offset-1"
+                className={`block w-full overflow-hidden rounded-lg bg-slate-100 shadow-sm transition hover:shadow-md focus:outline-none focus:ring-2 focus:ring-accent-500 focus:ring-offset-1 ${isSelected ? "ring-2 ring-accent-500" : ""}`}
                 style={{ aspectRatio: "1" }}
               >
                 {thumb ? (
@@ -212,7 +285,23 @@ function GridView({
                   </div>
                 )}
               </button>
-              <div className="absolute right-1 top-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+              <div className={`absolute left-1 top-1 transition-opacity duration-150 ${isSelected ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
+                <span className="inline-flex rounded-md bg-white/90 shadow-sm backdrop-blur-sm p-0.5">
+                  <Checkbox checked={isSelected} onChange={(c) => onToggleSelect(obj.key, c)} />
+                </span>
+              </div>
+              <div className="absolute right-1 top-1 flex gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+                {onRotateClick && isImage(obj.key) && (
+                  <span className="inline-flex rounded-md bg-white/90 shadow-sm backdrop-blur-sm">
+                    <RotateCCWButton onClick={() => onRotateClick(obj.key, "ccw")} />
+                    <RotateCWButton onClick={() => onRotateClick(obj.key, "cw")} />
+                  </span>
+                )}
+                {onDescribeClick && isImage(obj.key) && (
+                  <span className="inline-flex rounded-md bg-white/90 shadow-sm backdrop-blur-sm">
+                    <AnalyzeButton onClick={() => onDescribeClick(obj.key)} />
+                  </span>
+                )}
                 <span className="inline-flex rounded-md bg-white/90 shadow-sm backdrop-blur-sm">
                   <DeleteButton onClick={() => onDeleteClick(obj.key)} />
                 </span>
@@ -229,7 +318,24 @@ function GridView({
 }
 
 export function ObjectGrid(props: ObjectGridProps) {
-  const { folders, objects, viewMode, isReordering, onOrderChange, prefix, siteUrl, transforms } = props;
+  const { folders, objects, viewMode, isReordering, onOrderChange, prefix, siteUrl, transforms, onBulkDelete } = props;
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const onToggleSelect = useCallback((key: string, checked: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(key); else next.delete(key);
+      return next;
+    });
+  }, []);
+
+  const selectAll = useCallback(() => {
+    setSelected(new Set(objects.map((o) => o.key)));
+  }, [objects]);
+
+  const clearSelection = useCallback(() => {
+    setSelected(new Set());
+  }, []);
 
   if (folders.length === 0 && objects.length === 0) {
     return (
@@ -270,5 +376,40 @@ export function ObjectGrid(props: ObjectGridProps) {
     );
   }
 
-  return viewMode === "grid" ? <GridView {...props} /> : <ListView {...props} />;
+  return (
+    <>
+      {selected.size > 0 && (
+        <div className="flex items-center gap-3 border-b border-slate-100 bg-accent-50/50 px-4 py-2">
+          <span className="text-sm font-medium text-accent-700">
+            {selected.size} selected
+          </span>
+          <button
+            onClick={selectAll}
+            className="text-xs text-accent-600 transition hover:text-accent-800"
+          >
+            Select all
+          </button>
+          <button
+            onClick={clearSelection}
+            className="text-xs text-slate-500 transition hover:text-slate-700"
+          >
+            Clear
+          </button>
+          <div className="flex-1" />
+          {onBulkDelete && (
+            <button
+              onClick={() => { onBulkDelete(Array.from(selected)); clearSelection(); }}
+              className="rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white shadow-sm transition hover:bg-red-700"
+            >
+              Delete {selected.size} file{selected.size === 1 ? "" : "s"}
+            </button>
+          )}
+        </div>
+      )}
+      {viewMode === "grid"
+        ? <GridView {...props} selected={selected} onToggleSelect={onToggleSelect} />
+        : <ListView {...props} selected={selected} onToggleSelect={onToggleSelect} />
+      }
+    </>
+  );
 }

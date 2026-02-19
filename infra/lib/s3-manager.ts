@@ -1,6 +1,8 @@
 import * as cdk from "aws-cdk-lib";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3n from "aws-cdk-lib/aws-s3-notifications";
+import * as sns from "aws-cdk-lib/aws-sns";
+import * as snsSubscriptions from "aws-cdk-lib/aws-sns-subscriptions";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
 import * as lambda from "aws-cdk-lib/aws-lambda";
@@ -49,11 +51,19 @@ export interface TransformSpec {
   format?: "jpeg" | "webp" | "avif" | "png";
 }
 
+export interface AiDescribeConfig {
+  apiKey: string;
+  systemPrompt: string;
+  model?: string;
+}
+
 export interface S3ManagerProps {
   buckets: BucketConfig[];
   auth: S3ManagerAuth;
   domain?: S3ManagerDomain;
   transforms?: TransformSpec[];
+  /** AI image analysis via Claude Vision */
+  ai?: AiDescribeConfig;
   /** Filename used as directory marker, default: ".s3ui.json" */
   dirConfigFile?: string;
   /** Max concurrent browser uploads, default: 10 */
@@ -153,19 +163,23 @@ export class S3Manager extends Construct {
     }
 
     // --- API Lambda ---
+    const lambdaDir = path.join(__dirname, "../../lambda");
     const handler = new lambdaNodejs.NodejsFunction(this, "ApiHandler", {
-      entry: path.join(__dirname, "../../lambda/handler.ts"),
+      entry: path.join(lambdaDir, "handler.ts"),
       handler: "handler",
-      runtime: lambda.Runtime.NODEJS_20_X,
-      memorySize: 128,
-      timeout: cdk.Duration.seconds(transforms.length > 0 ? 30 : 10),
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 512,
+      timeout: cdk.Duration.seconds(30),
       environment: lambdaEnv,
+      projectRoot: path.join(__dirname, "../.."),
+      depsLockFilePath: path.join(lambdaDir, "package-lock.json"),
       bundling: {
         minify: true,
         sourceMap: false,
         target: "es2022",
         format: lambdaNodejs.OutputFormat.ESM,
-        externalModules: [],
+        nodeModules: ["sharp"],
+        forceDockerBundling: true,
       },
     });
 
@@ -279,13 +293,15 @@ function handler(event) {
       }),
     });
 
-    // Set SITE_URL on API Lambda now that distribution exists
+    // Set SITE_URL + DISTRIBUTION_ID on API Lambda now that distribution exists
     if (transforms.length > 0) {
       const siteUrl = props.domain
         ? `https://${props.domain.domainName}`
         : `https://${this.distribution.distributionDomainName}`;
       handler.addEnvironment("SITE_URL", siteUrl);
     }
+    handler.addEnvironment("DISTRIBUTION_ID", this.distribution.distributionId);
+    this.distribution.grant(handler, "cloudfront:CreateInvalidation");
 
     // Route53 records
     if (props.domain) {
@@ -311,16 +327,17 @@ function handler(event) {
     }
 
     // --- Transform Lambda (only when transforms configured) ---
+    let transformHandler: lambdaNodejs.NodejsFunction | undefined;
     if (transforms.length > 0) {
       const lambdaDir = path.join(__dirname, "../../lambda");
-      const transformHandler = new lambdaNodejs.NodejsFunction(
+      transformHandler = new lambdaNodejs.NodejsFunction(
         this,
         "TransformHandler",
         {
           entry: path.join(lambdaDir, "transform.ts"),
           handler: "handler",
-          runtime: lambda.Runtime.NODEJS_20_X,
-          memorySize: 1024,
+          runtime: lambda.Runtime.NODEJS_22_X,
+          memorySize: 2048,
           timeout: cdk.Duration.minutes(2),
           projectRoot: path.join(__dirname, "../.."),
           depsLockFilePath: path.join(lambdaDir, "package-lock.json"),
@@ -341,12 +358,76 @@ function handler(event) {
       for (const bucket of this.assetBuckets) {
         bucket.grantReadWrite(transformHandler);
       }
+    }
 
-      // S3 event notifications — only on created buckets (imported buckets can't add notifications via CDK)
+    // --- AI Describe Lambda (only when ai config provided) ---
+    let describeHandler: lambdaNodejs.NodejsFunction | undefined;
+    if (props.ai?.apiKey) {
+      const aiModel = props.ai.model ?? "claude-haiku-4-5-20251001";
+
+      // Pass AI env vars to the API handler (for on-demand describe)
+      handler.addEnvironment("ANTHROPIC_API_KEY", props.ai.apiKey);
+      handler.addEnvironment("AI_SYSTEM_PROMPT", props.ai.systemPrompt);
+      handler.addEnvironment("AI_MODEL", aiModel);
+
+      describeHandler = new lambdaNodejs.NodejsFunction(
+        this,
+        "DescribeHandler",
+        {
+          entry: path.join(lambdaDir, "describe.ts"),
+          handler: "handler",
+          runtime: lambda.Runtime.NODEJS_22_X,
+          memorySize: 256,
+          timeout: cdk.Duration.seconds(60),
+          projectRoot: path.join(__dirname, "../.."),
+          depsLockFilePath: path.join(lambdaDir, "package-lock.json"),
+          environment: {
+            ANTHROPIC_API_KEY: props.ai.apiKey,
+            AI_SYSTEM_PROMPT: props.ai.systemPrompt,
+            AI_MODEL: aiModel,
+            DIR_CONFIG_FILE: dirConfigFile,
+            ...(transforms.length > 0 && { TRANSFORMS: transformsJson }),
+          },
+          bundling: {
+            minify: true,
+            sourceMap: false,
+            target: "es2022",
+            format: lambdaNodejs.OutputFormat.ESM,
+          },
+        },
+      );
+
+      for (const bucket of this.assetBuckets) {
+        bucket.grantReadWrite(describeHandler);
+      }
+    }
+
+    // --- S3 event notifications (only on created buckets) ---
+    if (transformHandler && describeHandler) {
+      // Both need OBJECT_CREATED — use SNS fan-out to avoid overlapping notification error
+      const uploadTopic = new sns.Topic(this, "UploadTopic", {
+        displayName: "S3 Upload Notifications",
+      });
+      uploadTopic.addSubscription(new snsSubscriptions.LambdaSubscription(transformHandler));
+      uploadTopic.addSubscription(new snsSubscriptions.LambdaSubscription(describeHandler));
+      for (const bucket of createdBuckets) {
+        bucket.addEventNotification(
+          s3.EventType.OBJECT_CREATED,
+          new s3n.SnsDestination(uploadTopic),
+        );
+      }
+    } else if (transformHandler) {
       for (const bucket of createdBuckets) {
         bucket.addEventNotification(
           s3.EventType.OBJECT_CREATED,
           new s3n.LambdaDestination(transformHandler),
+        );
+      }
+    } else if (describeHandler) {
+      for (const bucket of createdBuckets) {
+        bucket.addEventNotification(
+          s3.EventType.OBJECT_CREATED,
+          new s3n.LambdaDestination(describeHandler),
         );
       }
     }
