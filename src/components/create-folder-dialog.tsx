@@ -43,7 +43,9 @@ export function CreateFolderDialog({
         headers: { "Content-Type": "application/json" },
         body: config,
       });
-      qc.invalidateQueries({ queryKey: ["objects", bucket, prefix] });
+      // Small delay to let S3 propagate the new object before listing
+      await new Promise((r) => setTimeout(r, 500));
+      await qc.invalidateQueries({ queryKey: ["objects", bucket, prefix] });
       onClose();
     } catch {
       // ignore

@@ -82,7 +82,7 @@ function SortableItem({
         style={{ aspectRatio: "1" }}
       >
         {thumb ? (
-          <img src={thumb} alt={name} className="h-full w-full object-cover" />
+          <img src={thumb} alt={name} className="h-full w-full object-contain" />
         ) : (
           <div className="flex h-full w-full flex-col items-center justify-center gap-1 p-2">
             <FileIcon />

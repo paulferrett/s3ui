@@ -116,16 +116,64 @@ interface DirConfig {
   photoMetas?: PhotoMeta[];
 }
 
-async function readDirConfig(bucket: string, prefix: string): Promise<DirConfig> {
+async function readDirConfig(bucket: string, prefix: string): Promise<{ config: DirConfig; etag?: string }> {
   const key = prefix + DIR_CONFIG_FILE;
   try {
     const res = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
     const body = await res.Body?.transformToString();
-    return body ? JSON.parse(body) : {};
+    return { config: body ? JSON.parse(body) : {}, etag: res.ETag };
   } catch (err: unknown) {
-    if (err && typeof err === "object" && "name" in err && (err as { name: string }).name === "NoSuchKey") return {};
-    return {};
+    if (err && typeof err === "object" && "name" in err && (err as { name: string }).name === "NoSuchKey") return { config: {} };
+    return { config: {} };
   }
+}
+
+async function writeDirConfigSafe(
+  bucket: string,
+  prefix: string,
+  config: DirConfig,
+  etag?: string,
+): Promise<void> {
+  const key = prefix + DIR_CONFIG_FILE;
+  const params: Record<string, unknown> = {
+    Bucket: bucket,
+    Key: key,
+    Body: JSON.stringify(config, null, 2),
+    ContentType: "application/json",
+  };
+  // Conditional write: If-Match on existing, If-None-Match on new
+  if (etag) {
+    (params as Record<string, string>).IfMatch = etag;
+  } else {
+    (params as Record<string, string>).IfNoneMatch = "*";
+  }
+  await s3.send(new PutObjectCommand(params as Parameters<typeof s3.send>[0] extends { input: infer I } ? I : never));
+}
+
+/** Read-merge-write with optimistic concurrency. Retries on conflict. */
+async function mergeDirConfig(
+  bucket: string,
+  prefix: string,
+  updater: (config: DirConfig) => DirConfig,
+  maxRetries = 3,
+): Promise<DirConfig> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const { config, etag } = await readDirConfig(bucket, prefix);
+    const merged = updater(config);
+    try {
+      await writeDirConfigSafe(bucket, prefix, merged, etag);
+      return merged;
+    } catch (err: unknown) {
+      const code = (err as { name?: string })?.name ?? "";
+      if ((code === "PreconditionFailed" || code === "ConditionalCheckFailedException") && attempt < maxRetries) {
+        const delay = 200 + Math.random() * 300 * (attempt + 1);
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error("mergeDirConfig: max retries exceeded");
 }
 
 function applyOrder<T>(items: T[], getFilename: (item: T) => string, order?: string[]): T[] {
@@ -239,12 +287,15 @@ export async function handler(event: {
         lastModified: o.LastModified?.toISOString() ?? "",
       }));
 
-    const dirConfig = await readDirConfig(bucket, prefix);
+    const { config: dirConfig } = await readDirConfig(bucket, prefix);
     const ordered = applyOrder(objects, (o) => o.key.slice(prefix.length), dirConfig.order);
+
+    const describedFiles = (dirConfig.photoMetas ?? []).map((m) => m.file);
 
     return json(200, {
       folders: (result.CommonPrefixes ?? []).map((p) => p.Prefix),
       objects: ordered,
+      describedFiles,
     });
   }
 
@@ -365,7 +416,7 @@ export async function handler(event: {
     await Promise.all(
       dirNames.map(async (dir) => {
         const cfgPrefix = dir ? dir + "/" : "";
-        const cfg = await readDirConfig(bucket, cfgPrefix);
+        const { config: cfg } = await readDirConfig(bucket, cfgPrefix);
         dirConfigs.set(dir, cfg);
       }),
     );
@@ -388,6 +439,7 @@ export async function handler(event: {
                 altText: meta.altText,
                 tags: meta.tags,
                 quality: meta.quality,
+                analyzed: meta.generated,
               }),
             };
           }),
@@ -414,7 +466,7 @@ export async function handler(event: {
     const bucket = query.bucket;
     if (!validBucket(bucket)) return json(400, { error: "Invalid bucket" });
     const prefix = query.prefix ?? "";
-    const config = await readDirConfig(bucket, prefix);
+    const { config } = await readDirConfig(bucket, prefix);
     return json(200, config);
   }
 
@@ -424,18 +476,7 @@ export async function handler(event: {
     const { bucket, prefix, config } = body;
     if (!validBucket(bucket)) return json(400, { error: "Invalid bucket" });
     const pfx = prefix ?? "";
-    // Read-merge-write to avoid clobbering photoMetas from describe Lambda
-    const existing = await readDirConfig(bucket, pfx);
-    const merged = { ...existing, ...config };
-    const key = pfx + DIR_CONFIG_FILE;
-    await s3.send(
-      new PutObjectCommand({
-        Bucket: bucket,
-        Key: key,
-        Body: JSON.stringify(merged, null, 2),
-        ContentType: "application/json",
-      }),
-    );
+    await mergeDirConfig(bucket, pfx, (existing) => ({ ...existing, ...config }));
     return json(200, { ok: true });
   }
 
@@ -548,26 +589,20 @@ export async function handler(event: {
       const prefix = lastSlash === -1 ? "" : imageKey.substring(0, lastSlash + 1);
       const filename = lastSlash === -1 ? imageKey : imageKey.substring(lastSlash + 1);
 
-      // Read-merge-write
-      const config = await readDirConfig(bucket, prefix);
-      const metas = config.photoMetas ?? [];
       const meta: PhotoMeta = {
         file: filename,
         ...result,
         generated: new Date().toISOString(),
       };
-      const idx = metas.findIndex((m) => m.file === filename);
-      if (idx >= 0) metas[idx] = meta;
-      else metas.push(meta);
-      config.photoMetas = metas;
 
-      const cfgKey = prefix + DIR_CONFIG_FILE;
-      await s3.send(new PutObjectCommand({
-        Bucket: bucket,
-        Key: cfgKey,
-        Body: JSON.stringify(config, null, 2),
-        ContentType: "application/json",
-      }));
+      // Merge with optimistic concurrency
+      await mergeDirConfig(bucket, prefix, (cfg) => {
+        const metas = cfg.photoMetas ?? [];
+        const idx = metas.findIndex((m) => m.file === filename);
+        if (idx >= 0) metas[idx] = meta;
+        else metas.push(meta);
+        return { ...cfg, photoMetas: metas };
+      });
 
       return json(200, { ok: true, meta });
     } catch (err) {

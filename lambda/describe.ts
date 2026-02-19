@@ -72,33 +72,64 @@ function extToMediaType(
 async function readDirConfig(
   bucket: string,
   prefix: string,
-): Promise<DirConfig> {
+): Promise<{ config: DirConfig; etag?: string }> {
   const key = prefix + DIR_CONFIG_FILE;
   try {
     const res = await s3.send(
       new GetObjectCommand({ Bucket: bucket, Key: key }),
     );
     const body = await res.Body?.transformToString();
-    return body ? JSON.parse(body) : {};
+    return { config: body ? JSON.parse(body) : {}, etag: res.ETag };
   } catch {
-    return {};
+    return { config: {} };
   }
 }
 
-async function writeDirConfig(
+async function writeDirConfigSafe(
   bucket: string,
   prefix: string,
   config: DirConfig,
+  etag?: string,
 ): Promise<void> {
   const key = prefix + DIR_CONFIG_FILE;
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: key,
-      Body: JSON.stringify(config, null, 2),
-      ContentType: "application/json",
-    }),
-  );
+  const params: Record<string, unknown> = {
+    Bucket: bucket,
+    Key: key,
+    Body: JSON.stringify(config, null, 2),
+    ContentType: "application/json",
+  };
+  if (etag) {
+    (params as Record<string, string>).IfMatch = etag;
+  } else {
+    (params as Record<string, string>).IfNoneMatch = "*";
+  }
+  await s3.send(new PutObjectCommand(params as Parameters<typeof s3.send>[0] extends { input: infer I } ? I : never));
+}
+
+/** Read-merge-write with optimistic concurrency. Retries on conflict. */
+async function mergeDirConfig(
+  bucket: string,
+  prefix: string,
+  updater: (config: DirConfig) => DirConfig,
+  maxRetries = 3,
+): Promise<DirConfig> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const { config, etag } = await readDirConfig(bucket, prefix);
+    const merged = updater(config);
+    try {
+      await writeDirConfigSafe(bucket, prefix, merged, etag);
+      return merged;
+    } catch (err: unknown) {
+      const code = (err as { name?: string })?.name ?? "";
+      if ((code === "PreconditionFailed" || code === "ConditionalCheckFailedException") && attempt < maxRetries) {
+        const delay = 200 + Math.random() * 300 * (attempt + 1);
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error("mergeDirConfig: max retries exceeded");
 }
 
 const describeImageTool: Anthropic.Tool = {
@@ -216,8 +247,8 @@ export async function handler(event: { Records: Array<S3EventRecord | { Sns?: { 
 
     try {
       // Check if already described
-      const config = await readDirConfig(bucket, prefix);
-      if (config.photoMetas?.some((m) => m.file === filename)) {
+      const { config: existing } = await readDirConfig(bucket, prefix);
+      if (existing.photoMetas?.some((m) => m.file === filename)) {
         console.log(`Already described: ${bucket}/${key}`);
         continue;
       }
@@ -241,24 +272,22 @@ export async function handler(event: { Records: Array<S3EventRecord | { Sns?: { 
       console.log(`Analyzing: ${bucket}/${key}`);
       const result = await analyzeImage(imageBase64, mediaType);
 
-      // Read-merge-write config
-      const freshConfig = await readDirConfig(bucket, prefix);
-      const metas = freshConfig.photoMetas ?? [];
-      const existing = metas.findIndex((m) => m.file === filename);
-      const meta: PhotoMeta = {
-        file: filename,
-        ...result,
-        generated: new Date().toISOString(),
-      };
-
-      if (existing >= 0) {
-        metas[existing] = meta;
-      } else {
-        metas.push(meta);
-      }
-
-      freshConfig.photoMetas = metas;
-      await writeDirConfig(bucket, prefix, freshConfig);
+      // Merge into .s3ui.json with optimistic concurrency
+      await mergeDirConfig(bucket, prefix, (cfg) => {
+        const metas = cfg.photoMetas ?? [];
+        const idx = metas.findIndex((m) => m.file === filename);
+        const meta: PhotoMeta = {
+          file: filename,
+          ...result,
+          generated: new Date().toISOString(),
+        };
+        if (idx >= 0) {
+          metas[idx] = meta;
+        } else {
+          metas.push(meta);
+        }
+        return { ...cfg, photoMetas: metas };
+      });
 
       console.log(`Described: ${bucket}/${key} → ${result.description}`);
     } catch (err) {

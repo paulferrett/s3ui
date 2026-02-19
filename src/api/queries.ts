@@ -30,6 +30,7 @@ export interface S3Object {
 export interface ObjectsResponse {
   folders: string[];
   objects: S3Object[];
+  describedFiles?: string[];
 }
 
 export function useAuthInfo() {

@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { useSearch, useNavigate } from "@tanstack/react-router";
 import { useObjects, useAuthInfo, useSaveDirConfig, useDeleteObject, useRotateImage, useDescribeImage, type S3Object } from "../api/queries";
 import { useAuth } from "../auth/use-token";
@@ -35,6 +35,8 @@ export function BrowserPage() {
   const rotateMutation = useRotateImage();
   const describeMutation = useDescribeImage();
   const [cacheBusts, setCacheBusts] = useState<Map<string, number>>(new Map());
+  const [describeAllProgress, setDescribeAllProgress] = useState<{ current: number; total: number } | null>(null);
+  const describeAllAbort = useRef(false);
   const dirConfigFile = authInfo?.dirConfigFile ?? ".s3ui.json";
 
   const setParams = useCallback(
@@ -83,6 +85,34 @@ export function BrowserPage() {
   const handleCancelReorder = useCallback(() => {
     setIsReordering(false);
     setPendingOrder(null);
+  }, []);
+
+  const isImageFile = useCallback((key: string) => /\.(jpe?g|png|gif|webp|avif|tiff?)$/i.test(key), []);
+
+  const unanalyzedImages = useMemo(() => {
+    if (!data?.objects) return [];
+    const described = new Set(data.describedFiles ?? []);
+    return data.objects.filter((o) => isImageFile(o.key) && !described.has(o.key.slice(prefix.length)));
+  }, [data?.objects, data?.describedFiles, prefix, isImageFile]);
+
+  const handleDescribeAll = useCallback(async () => {
+    if (unanalyzedImages.length === 0) return;
+    describeAllAbort.current = false;
+    setDescribeAllProgress({ current: 0, total: unanalyzedImages.length });
+    for (let i = 0; i < unanalyzedImages.length; i++) {
+      if (describeAllAbort.current) break;
+      setDescribeAllProgress({ current: i + 1, total: unanalyzedImages.length });
+      try {
+        await describeMutation.mutateAsync({ bucket, key: unanalyzedImages[i]!.key });
+      } catch (err) {
+        console.error("Describe failed:", err);
+      }
+    }
+    setDescribeAllProgress(null);
+  }, [unanalyzedImages, bucket, describeMutation]);
+
+  const handleCancelDescribeAll = useCallback(() => {
+    describeAllAbort.current = true;
   }, []);
 
   const displayObjects = useMemo(() => {
@@ -183,6 +213,34 @@ export function BrowserPage() {
                 >
                   Reorder
                 </button>
+              )}
+              {unanalyzedImages.length > 0 && !describeAllProgress && (
+                <button
+                  onClick={handleDescribeAll}
+                  className="rounded-lg bg-white/80 px-3.5 py-1.5 text-sm font-medium text-slate-600 shadow-sm ring-1 ring-slate-200 transition hover:bg-white"
+                  title={`Analyze ${unanalyzedImages.length} unanalyzed image${unanalyzedImages.length === 1 ? "" : "s"}`}
+                >
+                  <span className="flex items-center gap-1.5">
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                        d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z" />
+                    </svg>
+                    Analyze All ({unanalyzedImages.length})
+                  </span>
+                </button>
+              )}
+              {describeAllProgress && (
+                <>
+                  <span className="text-sm text-slate-500">
+                    Analyzing {describeAllProgress.current}/{describeAllProgress.total}...
+                  </span>
+                  <button
+                    onClick={handleCancelDescribeAll}
+                    className="rounded-lg bg-white/80 px-3.5 py-1.5 text-sm font-medium text-slate-600 shadow-sm ring-1 ring-slate-200 transition hover:bg-white"
+                  >
+                    Stop
+                  </button>
+                </>
               )}
               <button
                 onClick={() => setShowCreateFolder(true)}

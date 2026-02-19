@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { usePresignPut, useAuthInfo } from "../api/queries";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -9,34 +9,139 @@ interface UploadZoneProps {
 
 interface UploadProgress {
   name: string;
+  targetPrefix: string;
   progress: number;
   done: boolean;
+  doneAt?: number;
   error?: string;
+}
+
+/** File with a relative path and the target prefix captured at drop time. */
+interface FileWithPath {
+  file: File;
+  /** S3 key relative to the target prefix, e.g. "subfolder/photo.jpg" */
+  relativePath: string;
+  /** The S3 prefix that was active when this file was queued. */
+  targetPrefix: string;
+}
+
+/** Recursively read all files from a FileSystemDirectoryEntry. */
+function readDirectoryEntries(dir: FileSystemDirectoryEntry): Promise<FileSystemEntry[]> {
+  return new Promise((resolve, reject) => {
+    const reader = dir.createReader();
+    const all: FileSystemEntry[] = [];
+    const readBatch = () => {
+      reader.readEntries((entries) => {
+        if (entries.length === 0) { resolve(all); return; }
+        all.push(...entries);
+        readBatch();
+      }, reject);
+    };
+    readBatch();
+  });
+}
+
+async function collectFiles(entry: FileSystemEntry, basePath: string): Promise<Omit<FileWithPath, "targetPrefix">[]> {
+  if (entry.isFile) {
+    const file = await new Promise<File>((resolve, reject) =>
+      (entry as FileSystemFileEntry).file(resolve, reject),
+    );
+    return [{ file, relativePath: basePath + file.name }];
+  }
+  if (entry.isDirectory) {
+    const dirEntry = entry as FileSystemDirectoryEntry;
+    const children = await readDirectoryEntries(dirEntry);
+    const results: Omit<FileWithPath, "targetPrefix">[] = [];
+    for (const child of children) {
+      results.push(...await collectFiles(child, basePath + dirEntry.name + "/"));
+    }
+    return results;
+  }
+  return [];
+}
+
+/** Extract files from a drop event, preserving folder structure via webkitGetAsEntry. */
+async function filesFromDataTransfer(dt: DataTransfer): Promise<{ files: Omit<FileWithPath, "targetPrefix">[]; folders: string[] }> {
+  const files: Omit<FileWithPath, "targetPrefix">[] = [];
+  const folders = new Set<string>();
+
+  // Try webkitGetAsEntry for folder support
+  const items = Array.from(dt.items);
+  const entries = items.map((item) => item.webkitGetAsEntry?.()).filter(Boolean) as FileSystemEntry[];
+
+  if (entries.length > 0) {
+    for (const entry of entries) {
+      if (entry.isDirectory) {
+        // Collect all nested folders
+        const collected = await collectFiles(entry, "");
+        files.push(...collected);
+        // Gather unique folder paths
+        const seen = new Set<string>();
+        for (const f of collected) {
+          const parts = f.relativePath.split("/");
+          for (let i = 1; i < parts.length; i++) {
+            const folderPath = parts.slice(0, i).join("/") + "/";
+            if (!seen.has(folderPath)) { seen.add(folderPath); folders.add(folderPath); }
+          }
+        }
+      } else {
+        const collected = await collectFiles(entry, "");
+        files.push(...collected);
+      }
+    }
+  } else {
+    // Fallback: plain file list (no folder structure)
+    for (const f of Array.from(dt.files)) {
+      files.push({ file: f, relativePath: f.name });
+    }
+  }
+
+  return { files, folders: Array.from(folders) };
 }
 
 export function UploadZone({ bucket, prefix }: UploadZoneProps) {
   const [dragging, setDragging] = useState(false);
+  const [fullPageDragging, setFullPageDragging] = useState(false);
   const [uploads, setUploads] = useState<UploadProgress[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const presignPut = usePresignPut();
   const { data: authInfo } = useAuthInfo();
   const maxConcurrent = authInfo?.uploadConcurrency ?? 6;
+  const dirConfigFile = authInfo?.dirConfigFile ?? ".s3ui.json";
   const qc = useQueryClient();
   const activeRef = useRef(0);
-  const queueRef = useRef<File[]>([]);
+  const queueRef = useRef<FileWithPath[]>([]);
+  const dragCounterRef = useRef(0);
+
+  /** Create a folder marker (.s3ui.json) for a subfolder. */
+  const createFolder = useCallback(
+    async (folderPath: string) => {
+      const key = prefix + folderPath + dirConfigFile;
+      try {
+        const { url } = await presignPut.mutateAsync({
+          bucket, key, contentType: "application/json",
+        });
+        const body = JSON.stringify({ created: new Date().toISOString() }, null, 2);
+        await fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body });
+      } catch {
+        // folder creation is best-effort
+      }
+    },
+    [bucket, prefix, dirConfigFile, presignPut],
+  );
 
   const uploadFile = useCallback(
-    async (file: File) => {
-      const key = prefix + file.name;
-      const name = file.name;
+    async (item: FileWithPath) => {
+      const key = item.targetPrefix + item.relativePath;
+      const name = item.relativePath;
 
-      setUploads((prev) => [...prev, { name, progress: 0, done: false }]);
+      setUploads((prev) => [...prev, { name, targetPrefix: item.targetPrefix, progress: 0, done: false }]);
 
       try {
         const { url } = await presignPut.mutateAsync({
           bucket,
           key,
-          contentType: file.type || "application/octet-stream",
+          contentType: item.file.type || "application/octet-stream",
         });
 
         await new Promise<void>((resolve, reject) => {
@@ -44,7 +149,7 @@ export function UploadZone({ bucket, prefix }: UploadZoneProps) {
           xhr.open("PUT", url);
           xhr.setRequestHeader(
             "Content-Type",
-            file.type || "application/octet-stream",
+            item.file.type || "application/octet-stream",
           );
 
           xhr.upload.onprogress = (e) => {
@@ -63,20 +168,20 @@ export function UploadZone({ bucket, prefix }: UploadZoneProps) {
             else reject(new Error(`Upload failed: ${xhr.status}`));
           };
           xhr.onerror = () => reject(new Error("Upload failed"));
-          xhr.send(file);
+          xhr.send(item.file);
         });
 
         setUploads((prev) =>
           prev.map((u) =>
-            u.name === name ? { ...u, progress: 100, done: true } : u,
+            u.name === name ? { ...u, progress: 100, done: true, doneAt: Date.now() } : u,
           ),
         );
-        qc.invalidateQueries({ queryKey: ["objects", bucket, prefix] });
+        qc.invalidateQueries({ queryKey: ["objects", bucket, item.targetPrefix] });
       } catch (err) {
         setUploads((prev) =>
           prev.map((u) =>
             u.name === name
-              ? { ...u, error: err instanceof Error ? err.message : "Failed" }
+              ? { ...u, error: err instanceof Error ? err.message : "Failed", doneAt: Date.now() }
               : u,
           ),
         );
@@ -85,7 +190,7 @@ export function UploadZone({ bucket, prefix }: UploadZoneProps) {
         drainQueue();
       }
     },
-    [bucket, prefix, presignPut, qc],
+    [bucket, presignPut, qc],
   );
 
   const drainQueue = useCallback(() => {
@@ -95,29 +200,124 @@ export function UploadZone({ bucket, prefix }: UploadZoneProps) {
     }
   }, [uploadFile, maxConcurrent]);
 
-  const handleFiles = useCallback(
-    (files: FileList | File[]) => {
-      queueRef.current.push(...Array.from(files));
+  const enqueueFiles = useCallback(
+    (files: FileWithPath[]) => {
+      queueRef.current.push(...files);
       drainQueue();
     },
     [drainQueue],
+  );
+
+  /** Handle a drop with potential folder entries. Captures prefix at drop time. */
+  const handleDropWithFolders = useCallback(
+    async (dt: DataTransfer) => {
+      const dropPrefix = prefix; // capture at drop time
+      const { files, folders } = await filesFromDataTransfer(dt);
+      // Create folder markers first (parallel, best-effort)
+      if (folders.length > 0) {
+        await Promise.all(folders.map((f) => createFolder(f)));
+        // Small delay to let S3 propagate before listing
+        await new Promise((r) => setTimeout(r, 500));
+        await qc.invalidateQueries({ queryKey: ["objects", bucket, dropPrefix] });
+      }
+      // Stamp each file with the prefix that was active at drop time
+      enqueueFiles(files.map((f) => ({ ...f, targetPrefix: dropPrefix })));
+    },
+    [prefix, createFolder, enqueueFiles, qc, bucket],
+  );
+
+  /** Handle plain file input (no folder structure). */
+  const handleFileInput = useCallback(
+    (fileList: FileList) => {
+      const items: FileWithPath[] = Array.from(fileList).map((f) => ({ file: f, relativePath: f.name, targetPrefix: prefix }));
+      enqueueFiles(items);
+    },
+    [enqueueFiles, prefix],
   );
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       setDragging(false);
-      handleFiles(e.dataTransfer.files);
+      handleDropWithFolders(e.dataTransfer);
     },
-    [handleFiles],
+    [handleDropWithFolders],
   );
+
+  // Full-page drag-and-drop: capture files dragged anywhere on screen
+  useEffect(() => {
+    const onDragEnter = (e: DragEvent) => {
+      e.preventDefault();
+      dragCounterRef.current++;
+      if (e.dataTransfer?.types.includes("Files")) {
+        setFullPageDragging(true);
+      }
+    };
+    const onDragOver = (e: DragEvent) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    };
+    const onDragLeave = (e: DragEvent) => {
+      e.preventDefault();
+      dragCounterRef.current--;
+      if (dragCounterRef.current === 0) {
+        setFullPageDragging(false);
+      }
+    };
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault();
+      dragCounterRef.current = 0;
+      setFullPageDragging(false);
+      if (e.dataTransfer) {
+        handleDropWithFolders(e.dataTransfer);
+      }
+    };
+
+    document.addEventListener("dragenter", onDragEnter);
+    document.addEventListener("dragover", onDragOver);
+    document.addEventListener("dragleave", onDragLeave);
+    document.addEventListener("drop", onDrop);
+    return () => {
+      document.removeEventListener("dragenter", onDragEnter);
+      document.removeEventListener("dragover", onDragOver);
+      document.removeEventListener("dragleave", onDragLeave);
+      document.removeEventListener("drop", onDrop);
+    };
+  }, [handleDropWithFolders]);
 
   const clearDone = () => {
     setUploads((prev) => prev.filter((u) => !u.done && !u.error));
   };
 
+  // Auto-remove completed/errored uploads after 30 seconds
+  useEffect(() => {
+    const hasDone = uploads.some((u) => u.done || u.error);
+    if (!hasDone) return;
+    const timer = setInterval(() => {
+      const cutoff = Date.now() - 30_000;
+      setUploads((prev) => prev.filter((u) => {
+        if (u.done && u.doneAt && u.doneAt < cutoff) return false;
+        if (u.error && u.doneAt && u.doneAt < cutoff) return false;
+        return true;
+      }));
+    }, 5_000);
+    return () => clearInterval(timer);
+  }, [uploads]);
+
   return (
     <div className="space-y-3">
+      {/* Full-page drop overlay */}
+      {fullPageDragging && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-accent-500/10 backdrop-blur-[2px]">
+          <div className="rounded-2xl border-2 border-dashed border-accent-400 bg-white/90 px-12 py-10 text-center shadow-lg">
+            <svg className="mx-auto mb-3 h-10 w-10 text-accent-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 16V4m0 0l-4 4m4-4l4 4M4 20h16" />
+            </svg>
+            <p className="text-lg font-medium text-accent-700">Drop files or folders to upload</p>
+          </div>
+        </div>
+      )}
+
       <div
         onDragOver={(e) => {
           e.preventDefault();
@@ -137,13 +337,13 @@ export function UploadZone({ bucket, prefix }: UploadZoneProps) {
           type="file"
           multiple
           className="hidden"
-          onChange={(e) => e.target.files && handleFiles(e.target.files)}
+          onChange={(e) => e.target.files && handleFileInput(e.target.files)}
         />
         <svg className="mx-auto mb-2 h-6 w-6 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 16V4m0 0l-4 4m4-4l4 4M4 20h16" />
         </svg>
         <p className="text-sm text-slate-400">
-          Drop files here or click to upload
+          Drop files or folders here, or click to upload
         </p>
       </div>
 
@@ -163,6 +363,9 @@ export function UploadZone({ bucket, prefix }: UploadZoneProps) {
           {uploads.map((u) => (
             <div key={u.name} className="flex items-center gap-2 text-xs">
               <span className="min-w-0 flex-1 truncate text-slate-600">
+                {u.targetPrefix && (
+                  <span className="text-slate-400">{u.targetPrefix}</span>
+                )}
                 {u.name}
               </span>
               {u.error ? (
