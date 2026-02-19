@@ -91,10 +91,13 @@ export async function handler(event: { Records: S3EventRecord[] }) {
       const body = await getResult.Body!.transformToByteArray();
       const buffer = Buffer.from(body);
 
-      // Get dimensions
+      // Get dimensions (after auto-orientation from EXIF)
       const metadata = await sharp(buffer).metadata();
-      const width = metadata.width;
-      const height = metadata.height;
+      const orientation = metadata.orientation ?? 1;
+      // EXIF orientations 5-8 swap width/height
+      const rotated = orientation >= 5;
+      const width = rotated ? metadata.height : metadata.width;
+      const height = rotated ? metadata.width : metadata.height;
 
       // Store dimensions on original via copy-to-self
       if (width && height) {
@@ -121,7 +124,7 @@ export async function handler(event: { Records: S3EventRecord[] }) {
       // Generate transforms
       for (const spec of TRANSFORMS) {
         try {
-          let pipeline = sharp(buffer).resize({
+          let pipeline = sharp(buffer).rotate().resize({
             width: spec.width,
             height: spec.height,
             fit: spec.fit ?? "inside",
