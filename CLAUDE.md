@@ -1,5 +1,13 @@
 # S3 Asset Manager
 
+| | |
+|---|---|
+| **Repo** | [paulferrett/s3ui](https://github.com/paulferrett/s3ui) (public) |
+| **Stack** | React 18 / Vite 6 / TypeScript / Tailwind 4 / Lambda / CDK |
+| **Ports** | Dev server `8180` |
+| **Deploy** | AWS CDK (CloudFront + S3 + Lambda) |
+| **Co-commit** | No — public repo |
+
 Standalone serverless S3 file browser/manager. 100% self-contained — no shared infra imports.
 
 ## Stack
