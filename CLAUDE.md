@@ -61,19 +61,41 @@ scripts/       Deploy script
 - **Transforms**: Optional image transforms (resize/format) via a dedicated Lambda using sharp. Triggered by S3 event notifications on upload. EXIF auto-rotation applied.
 - **Reusable construct**: `s3-manager-infra` package exports `S3Manager` and `SpaEmbed` constructs. Kanosari's `MediaManager` construct imports the lambda code from this package.
 
+## S3 Event Loop Prevention
+
+When a Lambda writes back to the same S3 bucket that triggers it, it can create an infinite recursive loop. AWS will auto-detect and kill these loops, but they waste money and break functionality.
+
+**Transform Lambda** (`lambda/transform.ts`) does a `CopyObject` to the same key to store image dimensions as metadata. This fires another `OBJECT_CREATED` event. Loop is prevented by checking for existing `width`/`height` metadata before processing — if present, the image was already processed.
+
+**Describe Lambda** (`lambda/describe.ts`) writes `.s3ui.json` which is skipped by `!isImage()` and `endsWith(DIR_CONFIG_FILE)` checks.
+
+**Key rule:** Any Lambda that writes to the trigger bucket MUST have loop prevention. Always check for this when modifying S3 event handlers.
+
+## AI Describe Feature
+
+Optional Claude Vision integration for auto-describing images. Requires `ANTHROPIC_API_KEY` env var **at CDK deploy time** (baked into Lambda env). If not provided, AI feature is disabled but the `/api/describe` route still exists (returns 501).
+
+- Model: `claude-haiku-4-5` (default — version alias, not a dated snapshot)
+- The API handler resizes images >4.5MB with sharp before sending to Claude
+- The background Describe Lambda skips images >4.5MB
+
 ## Consumer: kanosari
 
-The kanosari project (`~/bs/kanosari/infra`) uses s3ui's lambda code and SPA via the `s3-manager-infra` npm dependency. Its `MediaManager` construct resolves lambda paths via `require.resolve('s3-manager-infra/package.json')`.
+The kanosari project (`~/bs/kanosari/infra`) uses s3ui's lambda code and SPA via the `s3-manager-infra` npm dependency (`file:` link to local `s3ui/infra`). Its `MediaManager` construct resolves lambda paths via `require.resolve('s3-manager-infra/package.json')`.
 
 **Deploy kanosari media CDN:**
 
+Credentials are in `~/bs/kanosari/infra/.env` (gitignored). Source it before deploying:
+
 ```bash
 cd ~/bs/kanosari/infra
-MEDIA_USERNAME=kanosari MEDIA_PASSWORD='KanoPhotos@2828' npx cdk deploy --all --profile kanosari
+env $(cat .env | xargs) npx cdk deploy --all --profile kanosari
 ```
 
 - AWS profile: `kanosari`
+- AWS region: `us-east-1` (CDK stack region, NOT the profile default `ap-southeast-2`)
 - Media URL: `https://media.kanosari.com`
 - Bucket: `kanosari-media`
 - Auth: Basic auth (setup mode) — credentials passed via env vars
 - All Lambda runtimes: Node 22
+- **ANTHROPIC_API_KEY must be set** for AI describe to work — omitting it disables the feature entirely (no Describe Lambda, no API key on API handler)
