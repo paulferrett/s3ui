@@ -363,7 +363,7 @@ function handler(event) {
     // --- AI Describe Lambda (only when ai config provided) ---
     let describeHandler: lambdaNodejs.NodejsFunction | undefined;
     if (props.ai?.apiKey) {
-      const aiModel = props.ai.model ?? "claude-haiku-4-5";
+      const aiModel = props.ai.model ?? "claude-haiku-5-5";
 
       // Pass AI env vars to the API handler (for on-demand describe)
       handler.addEnvironment("ANTHROPIC_API_KEY", props.ai.apiKey);

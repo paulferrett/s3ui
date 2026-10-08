@@ -167,7 +167,7 @@ export async function analyzeImage(
   mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp",
 ): Promise<Omit<PhotoMeta, "file" | "generated">> {
   const anthropic = new Anthropic();
-  const model = process.env.AI_MODEL ?? "claude-haiku-4-5";
+  const model = process.env.AI_MODEL ?? "claude-haiku-5-5";
   const systemPrompt =
     process.env.AI_SYSTEM_PROMPT ??
     "Describe images accurately and concisely.";

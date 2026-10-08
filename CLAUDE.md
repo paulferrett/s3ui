@@ -75,7 +75,7 @@ When a Lambda writes back to the same S3 bucket that triggers it, it can create 
 
 Optional Claude Vision integration for auto-describing images. Requires `ANTHROPIC_API_KEY` env var **at CDK deploy time** (baked into Lambda env). If not provided, AI feature is disabled but the `/api/describe` route still exists (returns 501).
 
-- Model: `claude-haiku-4-5` (default — version alias, not a dated snapshot)
+- Model: `claude-haiku-5-5` (default — version alias, not a dated snapshot)
 - The API handler resizes images >4.5MB with sharp before sending to Claude
 - The background Describe Lambda skips images >4.5MB
 
